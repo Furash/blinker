@@ -39,6 +39,18 @@ def find_blender():
                 exe = d / "blender.exe"
                 if exe.is_file():
                     return str(exe)
+    else:
+        # Common Linux / macOS install locations
+        for candidate in (
+            "/snap/bin/blender",
+            "/usr/bin/blender",
+            "/usr/local/bin/blender",
+            Path.home() / "blender" / "blender",
+            # Flatpak — binary is available at this path when installed
+            "/var/lib/flatpak/exports/bin/org.blender.Blender",
+        ):
+            if Path(candidate).is_file():
+                return str(candidate)
 
     return None
 

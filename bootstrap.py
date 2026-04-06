@@ -43,6 +43,10 @@ def _resolve_link(path):
         # WinError 4390 = "not a reparse point" (regular directory, not a link)
         if sys.platform == "win32" and getattr(e, "winerror", None) == 4390:
             return None
+        # EINVAL = not a symlink (Linux/macOS)
+        import errno
+        if e.errno == errno.EINVAL:
+            return None
         _log(f"  readlink failed for {path}: {e}")
         return None
     except ValueError:
@@ -116,12 +120,39 @@ def _enable_addon():
     _log(f"Enabled: {_full_module}")
 
 
+def _notify_pre_reload():
+    """Call addon's blinker_pre_reload() hook if defined.
+
+    Addons can define this function to clean up state that can't survive
+    a reload, such as cancelling modal operators and removing draw handlers.
+    """
+    try:
+        mod = sys.modules.get(_full_module)
+        if mod is None:
+            return
+        hook = getattr(mod, "blinker_pre_reload", None)
+        if hook is not None:
+            _log("Calling blinker_pre_reload()")
+            hook()
+    except Exception:
+        _log("Error in blinker_pre_reload():")
+        traceback.print_exc()
+
+
 def _reload_addon():
     """Disable -> purge sys.modules -> re-enable. Same technique as VS Code extension."""
+    # Set flag so draw callbacks can detect reload and bail out before
+    # accessing self (which becomes invalid after class unregistration).
+    # Checked via: bpy.app.driver_namespace.get("_blinker_reloading")
+    bpy.app.driver_namespace["_blinker_reloading"] = True
+
+    _notify_pre_reload()
+
     try:
         bpy.ops.preferences.addon_disable(module=_full_module)
     except Exception:
         traceback.print_exc()
+        bpy.app.driver_namespace.pop("_blinker_reloading", None)
         return "error: disable failed"
 
     count = 0
@@ -134,11 +165,19 @@ def _reload_addon():
         bpy.ops.preferences.addon_enable(module=_full_module)
     except Exception:
         traceback.print_exc()
+        bpy.app.driver_namespace.pop("_blinker_reloading", None)
         return "error: enable failed"
 
     for window in bpy.context.window_manager.windows:
         for area in window.screen.areas:
             area.tag_redraw()
+
+    # Clear the flag after a short delay so orphaned draw handlers from the
+    # old modal operator still see it during the first redraw after reload.
+    def _clear_reloading_flag():
+        bpy.app.driver_namespace.pop("_blinker_reloading", None)
+        return None
+    bpy.app.timers.register(_clear_reloading_flag, first_interval=0.2)
 
     _log(f"Reloaded {_full_module} ({count} modules)")
     return f"ok ({count} modules)"
