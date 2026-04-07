@@ -15,7 +15,8 @@ _addon_path = Path(os.environ["BLINKER_ADDON_PATH"])
 _module = os.environ["BLINKER_MODULE"]
 _repo = os.environ["BLINKER_REPO"]
 _port = int(os.environ["BLINKER_PORT"])
-_full_module = f"bl_ext.{_repo}.{_module}"
+_legacy = os.environ.get("BLINKER_LEGACY") == "1"
+_full_module = _module if _legacy else f"bl_ext.{_repo}.{_module}"
 
 _server_socket = None
 
@@ -60,10 +61,31 @@ def _resolve_link(path):
     return Path(target).resolve()
 
 
+def _get_legacy_addons_dir():
+    """Return the user scripts/addons directory for legacy addons."""
+    return Path(bpy.utils.user_resource('SCRIPTS', path="addons"))
+
+
 def _find_existing_link():
-    """Search all extension repos for an existing link to _addon_path."""
+    """Search addon directories for an existing link to _addon_path."""
     resolved = _addon_path.resolve()
     _log(f"Looking for existing link to {resolved}")
+
+    if _legacy:
+        # Search legacy addons directory
+        addons_dir = _get_legacy_addons_dir()
+        if addons_dir.is_dir():
+            for entry in addons_dir.iterdir():
+                if not entry.is_dir():
+                    continue
+                target = _resolve_link(entry)
+                if target is not None:
+                    _log(f"  {entry.name} in addons/ -> {target}")
+                    if target == resolved:
+                        return entry.name, entry
+        return None, None
+
+    # Search extension repos
     for repo in bpy.context.preferences.extensions.repos:
         if not repo.enabled:
             continue
@@ -81,23 +103,8 @@ def _find_existing_link():
     return None, None
 
 
-def _create_link():
-    global _full_module
-
-    # Check all repos for existing link to same addon (e.g. from VS Code extension)
-    existing_repo, existing_path = _find_existing_link()
-    if existing_path is not None:
-        _full_module = f"bl_ext.{existing_repo}.{existing_path.name}"
-        _log(f"Found existing link in '{existing_repo}': {existing_path}")
-        return
-
-    # No existing link — create one in blinker's repo
-    repo = _ensure_repo()
-    repo_dir = Path(repo.custom_directory if repo.use_custom_directory else repo.directory)
-    os.makedirs(repo_dir, exist_ok=True)
-
-    link_path = repo_dir / _module
-
+def _make_link(link_path):
+    """Create a symlink (Unix) or junction (Windows) from link_path to _addon_path."""
     if link_path.exists() or link_path.is_symlink():
         _log(f"Removing old link: {link_path}")
         os.remove(link_path)
@@ -111,11 +118,39 @@ def _create_link():
     _log(f"Linked: {link_path} -> {_addon_path}")
 
 
+def _create_link():
+    global _full_module
+
+    existing_id, existing_path = _find_existing_link()
+    if existing_path is not None:
+        if _legacy:
+            _full_module = existing_path.name
+        else:
+            _full_module = f"bl_ext.{existing_id}.{existing_path.name}"
+        _log(f"Found existing link: {existing_path}")
+        return
+
+    if _legacy:
+        # Link into scripts/addons/
+        addons_dir = _get_legacy_addons_dir()
+        os.makedirs(addons_dir, exist_ok=True)
+        _make_link(addons_dir / _module)
+    else:
+        # Link into extensions repo
+        repo = _ensure_repo()
+        repo_dir = Path(repo.custom_directory if repo.use_custom_directory else repo.directory)
+        os.makedirs(repo_dir, exist_ok=True)
+        _make_link(repo_dir / _module)
+
+
 # -- Addon enable / reload --
 
 
 def _enable_addon():
-    bpy.ops.extensions.repo_refresh_all()
+    if _legacy:
+        bpy.ops.preferences.addon_refresh()
+    else:
+        bpy.ops.extensions.repo_refresh_all()
     bpy.ops.preferences.addon_enable(module=_full_module)
     _log(f"Enabled: {_full_module}")
 

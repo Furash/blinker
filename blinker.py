@@ -75,6 +75,8 @@ def cmd_start(argv):
         print(f"Error: {addon_path} doesn't look like a Blender addon")
         return 1
 
+    legacy = not (addon_path / "blender_manifest.toml").exists()
+
     blender = args.blender or find_blender()
     if not blender:
         print("Error: Blender not found. Use --blender or set BLENDER_PATH")
@@ -83,7 +85,10 @@ def cmd_start(argv):
     module = args.module or addon_path.name
 
     print(f"  addon:   {addon_path}")
-    print(f"  module:  bl_ext.{args.repo}.{module}")
+    if legacy:
+        print(f"  module:  {module}  (legacy bl_info addon)")
+    else:
+        print(f"  module:  bl_ext.{args.repo}.{module}")
     print(f"  blender: {blender}")
     print(f"  port:    {args.port}")
     print()
@@ -94,6 +99,7 @@ def cmd_start(argv):
         "BLINKER_MODULE": module,
         "BLINKER_REPO": args.repo,
         "BLINKER_PORT": str(args.port),
+        "BLINKER_LEGACY": "1" if legacy else "",
     }
 
     cmd = [blender, "--python", str(BOOTSTRAP)]

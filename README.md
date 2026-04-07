@@ -1,12 +1,12 @@
 # blinker
 
-Hot-reload CLI for Blender addon development. Symlinks your addon into an extensions repo, launches Blender with a TCP reload server, and accepts `reload` commands that disable/purge/re-enable the addon.
+Hot-reload CLI for Blender addon development. Symlinks your addon into Blender's addon directory, launches Blender with a TCP reload server, and accepts `reload` commands that disable/purge/re-enable the addon. Supports both legacy addons (`bl_info`) and modern extensions (`blender_manifest.toml`).
 
 Same disable/purge/enable technique as [Blender Development for VS Code](https://github.com/JacquesLucke/blender_vscode), but with a plain TCP socket instead of Flask + HTTP + debugpy. No dependencies beyond stdlib and `bpy`.
 
 ## Requirements
 
-- Blender 4.2+ (extensions system, not legacy `bl_info`)
+- Blender 2.80+ for legacy addons (`bl_info`), Blender 4.2+ for extensions (`blender_manifest.toml`)
 - Python 3.x on the host
 - Windows: permission to create junctions (default)
 - Linux/macOS: permission to create symlinks (default)
@@ -37,7 +37,7 @@ blinker <addon_path> [--blender PATH] [--port PORT] [--repo NAME] [--module NAME
 blinker reload [--port PORT]
 ```
 
-`blinker path/to/addon` finds Blender (`BLENDER_PATH` env, then `PATH`, then platform-specific locations), symlinks/junctions the addon into an extensions repo, and launches Blender with the reload server on `localhost:9876`. If an existing link to the same addon exists in any repo (e.g. from the VS Code extension), it reuses it.
+`blinker path/to/addon` finds Blender (`BLENDER_PATH` env, then `PATH`, then platform-specific locations), symlinks/junctions the addon into Blender, and launches the reload server on `localhost:9876`. Auto-detects addon type: if `blender_manifest.toml` exists, it links into an extensions repo; otherwise it links into `scripts/addons/` as a legacy addon. If an existing link to the same addon exists (e.g. from the VS Code extension), it reuses it.
 
 `blinker reload` connects to the server and triggers: set `_blinker_reloading` flag → call `blinker_pre_reload()` hook → `addon_disable` → purge `sys.modules` → `addon_enable` → redraw → clear flag.
 
