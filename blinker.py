@@ -117,7 +117,11 @@ def cmd_reload(argv):
 
     p = argparse.ArgumentParser(prog="blinker reload")
     p.add_argument("--port", type=int, default=DEFAULT_PORT)
+    p.add_argument("--clear", action="store_true", help="Clear console before reload")
     args = p.parse_args(argv)
+
+    if args.clear:
+        os.system("cls" if sys.platform == "win32" else "clear")
 
     try:
         with socket.create_connection(("127.0.0.1", args.port), timeout=3) as sock:

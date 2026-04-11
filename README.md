@@ -34,14 +34,14 @@ Or run directly: `python3 path/to/blinker.py`.
 
 ```
 blinker <addon_path> [--blender PATH] [--port PORT] [--repo NAME] [--module NAME] [--blend FILE]
-blinker reload [--port PORT]
+blinker reload [--port PORT] [--clear]
 ```
 
 `blinker path/to/addon` finds Blender (`BLENDER_PATH` env, then `PATH`, then platform-specific locations), symlinks/junctions the addon into Blender, and launches the reload server on `localhost:9876`. Auto-detects addon type: if `blender_manifest.toml` exists, it links into an extensions repo; otherwise it links into `scripts/addons/` as a legacy addon. If an existing link to the same addon exists (e.g. from the VS Code extension), it reuses it.
 
 `blinker reload` connects to the server and triggers: set `_blinker_reloading` flag → call `blinker_pre_reload()` hook → `addon_disable` → purge `sys.modules` → `addon_enable` → redraw → clear flag.
 
-`--port` defaults to `9876`. `--repo` defaults to `blinker`. `--module` defaults to the addon folder name. `--blend` opens a `.blend` file on launch.
+`--port` defaults to `9876`. `--repo` defaults to `blinker`. `--module` defaults to the addon folder name. `--blend` opens a `.blend` file on launch. `--clear` clears the console before reloading.
 
 ## How it works
 
