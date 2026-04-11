@@ -4,6 +4,7 @@
 Usage:
     blinker <addon_path> [options]    Launch Blender with addon + reload server
     blinker reload [--port PORT]      Reload addon in running Blender
+    blinker restart [--port PORT]     Restart Blender (clears console, --no-clear to keep)
 """
 
 import os
@@ -11,6 +12,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 DEFAULT_PORT = 9876
@@ -102,14 +104,39 @@ def cmd_start(argv):
         "BLINKER_LEGACY": "1" if legacy else "",
     }
 
-    cmd = [blender, "--python", str(BOOTSTRAP)]
-    if args.blend:
-        cmd.append(args.blend)
+    restart_marker = os.path.join(tempfile.gettempdir(), "blinker_restart_path")
+    restart_blend = os.path.join(tempfile.gettempdir(), "blinker_restart.blend")
+    blend_file = args.blend
 
-    try:
-        return subprocess.call(cmd, env=env)
-    except KeyboardInterrupt:
-        return 0
+    while True:
+        cmd = [blender, "--python", str(BOOTSTRAP)]
+        if blend_file:
+            cmd.append(blend_file)
+
+        try:
+            code = subprocess.call(cmd, env=env)
+        except KeyboardInterrupt:
+            code = 0
+
+        if code != 75:
+            break
+
+        if os.path.isfile(restart_marker):
+            with open(restart_marker) as f:
+                blend_file = f.read().strip() or args.blend
+            os.remove(restart_marker)
+        else:
+            blend_file = args.blend
+
+        print("\nRestarting Blender...")
+
+    for path in (restart_marker, restart_blend):
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+
+    return code
 
 
 def cmd_reload(argv):
@@ -137,6 +164,39 @@ def cmd_reload(argv):
         return 1
 
 
+def cmd_restart(argv):
+    import argparse
+
+    p = argparse.ArgumentParser(prog="blinker restart")
+    p.add_argument("--port", type=int, default=DEFAULT_PORT)
+    p.add_argument("--no-clear", action="store_true", help="Don't clear console before restart")
+    p.add_argument("--save", action="store_true", help="Save current .blend before restarting")
+    p.add_argument("--temp", action="store_true", help="Save scene to temp file before restarting")
+    args = p.parse_args(argv)
+
+    if not args.no_clear:
+        os.system("cls" if sys.platform == "win32" else "clear")
+
+    command = "restart"
+    if args.save:
+        command = "restart save"
+    elif args.temp:
+        command = "restart temp"
+
+    try:
+        with socket.create_connection(("127.0.0.1", args.port), timeout=3) as sock:
+            sock.sendall((command + "\n").encode())
+            resp = sock.recv(1024).decode().strip()
+            print(resp)
+            return 0 if resp.startswith("ok") else 1
+    except ConnectionRefusedError:
+        print(f"No blinker server on port {args.port}")
+        return 1
+    except socket.timeout:
+        print(f"Timeout connecting to port {args.port}")
+        return 1
+
+
 def main():
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
         print(__doc__.strip())
@@ -144,6 +204,8 @@ def main():
 
     if sys.argv[1] == "reload":
         return cmd_reload(sys.argv[2:])
+    elif sys.argv[1] == "restart":
+        return cmd_restart(sys.argv[2:])
     else:
         return cmd_start(sys.argv[1:])
 

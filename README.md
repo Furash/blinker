@@ -35,13 +35,16 @@ Or run directly: `python3 path/to/blinker.py`.
 ```
 blinker <addon_path> [--blender PATH] [--port PORT] [--repo NAME] [--module NAME] [--blend FILE]
 blinker reload [--port PORT] [--clear]
+blinker restart [--port PORT] [--no-clear] [--save | --temp]
 ```
 
 `blinker path/to/addon` finds Blender (`BLENDER_PATH` env, then `PATH`, then platform-specific locations), symlinks/junctions the addon into Blender, and launches the reload server on `localhost:9876`. Auto-detects addon type: if `blender_manifest.toml` exists, it links into an extensions repo; otherwise it links into `scripts/addons/` as a legacy addon. If an existing link to the same addon exists (e.g. from the VS Code extension), it reuses it.
 
 `blinker reload` connects to the server and triggers: set `_blinker_reloading` flag → call `blinker_pre_reload()` hook → `addon_disable` → purge `sys.modules` → `addon_enable` → redraw → clear flag.
 
-`--port` defaults to `9876`. `--repo` defaults to `blinker`. `--module` defaults to the addon folder name. `--blend` opens a `.blend` file on launch. `--clear` clears the console before reloading.
+`blinker restart` closes Blender and relaunches with the same addon. `--save` saves the current `.blend` file in place before restarting (falls back to `--temp` for untitled files). `--temp` saves the scene to a temp file so the restart preserves your scene without touching your real file. Without either flag, Blender restarts with no scene preservation.
+
+`--port` defaults to `9876`. `--repo` defaults to `blinker`. `--module` defaults to the addon folder name. `--blend` opens a `.blend` file on launch. `--clear` clears the console before reloading. Restart clears the console by default; pass `--no-clear` to keep it.
 
 ## How it works
 
@@ -59,11 +62,17 @@ Terminal 2                                     |
 ----------                                     |
 blinker reload ---- TCP "reload\n" ----------->|
                <--- "ok (7 modules)\n" --------+
+                                               |
+blinker restart --- TCP "restart [save|temp]\n" ->|
+               <--- "ok\n" ---   save (optional) |
+                              +  exit code 75    |
+                                               |
+Terminal 1 detects exit 75, relaunches Blender
 ```
 
 `bootstrap.py` scans all enabled extension repos with `os.readlink()` to find existing links to the addon. Windows junctions return `\\?\`-prefixed paths (stripped before comparison); non-link directories are skipped via WinError 4390 (Windows) or EINVAL (Linux).
 
-The TCP server is a non-blocking socket polled every 100ms via `bpy.app.timers`. Commands: `reload` → `ok (N modules)` / `error: ...`, `ping` → `pong`. Runs on Blender's main thread so disable/enable have full `bpy.context` access.
+The TCP server is a non-blocking socket polled every 100ms via `bpy.app.timers`. Commands: `reload` → `ok (N modules)` / `error: ...`, `restart [save|temp]` → `ok` (optionally saves scene, exits with code 75), `ping` → `pong`. Runs on Blender's main thread so disable/enable have full `bpy.context` access.
 
 ## Modal operators and draw handlers
 

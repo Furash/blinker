@@ -6,6 +6,7 @@ Sets up addon symlink, enables addon, starts TCP reload server.
 import os
 import socket
 import sys
+import tempfile
 import traceback
 from pathlib import Path
 
@@ -218,6 +219,41 @@ def _reload_addon():
     return f"ok ({count} modules)"
 
 
+def _prepare_restart(mode=None):
+    """Save state (if requested) and schedule Blender exit for restart."""
+    marker = os.path.join(tempfile.gettempdir(), "blinker_restart_path")
+
+    if mode == "save":
+        if bpy.data.filepath:
+            try:
+                bpy.ops.wm.save_mainfile()
+                with open(marker, "w") as f:
+                    f.write(bpy.data.filepath)
+                _log(f"Saved {bpy.data.filepath}")
+            except Exception:
+                _log("Could not save file for restart")
+                traceback.print_exc()
+        else:
+            mode = "temp"
+
+    if mode == "temp":
+        blend_path = os.path.join(tempfile.gettempdir(), "blinker_restart.blend")
+        try:
+            bpy.ops.wm.save_as_mainfile(filepath=blend_path, copy=True)
+            with open(marker, "w") as f:
+                f.write(blend_path)
+        except Exception:
+            _log("Could not save scene for restart")
+            traceback.print_exc()
+
+    def _quit():
+        os._exit(75)
+    bpy.app.timers.register(_quit, first_interval=0.2)
+
+    _log("Restarting...")
+    return "ok"
+
+
 # -- TCP server --
 
 
@@ -244,6 +280,9 @@ def _poll():
             data = conn.recv(1024).decode().strip()
             if data == "reload":
                 result = _reload_addon()
+            elif data.startswith("restart"):
+                parts = data.split(None, 1)
+                result = _prepare_restart(parts[1] if len(parts) > 1 else None)
             elif data == "ping":
                 result = "pong"
             else:
