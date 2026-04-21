@@ -284,7 +284,7 @@ def _poll():
                 parts = data.split(None, 1)
                 result = _prepare_restart(parts[1] if len(parts) > 1 else None)
             elif data == "ping":
-                result = "pong"
+                result = f"pong\t{_full_module}\t{_addon_path}"
             else:
                 result = f"error: unknown command '{data}'"
             conn.sendall((result + "\n").encode())

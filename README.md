@@ -34,17 +34,38 @@ Or run directly: `python3 path/to/blinker.py`.
 
 ```
 blinker <addon_path> [--blender PATH] [--port PORT] [--repo NAME] [--module NAME] [--blend FILE]
-blinker reload [--port PORT] [--clear]
-blinker restart [--port PORT] [--no-clear] [--save | --temp]
+blinker list
+blinker reload  [INDEX] [--port PORT] [--clear]
+blinker restart [INDEX] [--port PORT] [--no-clear] [--save | --temp]
 ```
 
 `blinker path/to/addon` finds Blender (`BLENDER_PATH` env, then `PATH`, then platform-specific locations), symlinks/junctions the addon into Blender, and launches the reload server on `localhost:9876`. Auto-detects addon type: if `blender_manifest.toml` exists, it links into an extensions repo; otherwise it links into `scripts/addons/` as a legacy addon. If an existing link to the same addon exists (e.g. from the VS Code extension), it reuses it.
+
+`blinker list` probes ports 9876–9895 and prints running instances with 1-based indices, module name, and addon path.
 
 `blinker reload` connects to the server and triggers: set `_blinker_reloading` flag → call `blinker_pre_reload()` hook → `addon_disable` → purge `sys.modules` → `addon_enable` → redraw → clear flag.
 
 `blinker restart` closes Blender and relaunches with the same addon. `--save` saves the current `.blend` file in place before restarting (falls back to `--temp` for untitled files). `--temp` saves the scene to a temp file so the restart preserves your scene without touching your real file. Without either flag, Blender restarts with no scene preservation.
 
-`--port` defaults to `9876`. `--repo` defaults to `blinker`. `--module` defaults to the addon folder name. `--blend` opens a `.blend` file on launch. `--clear` clears the console before reloading. Restart clears the console by default; pass `--no-clear` to keep it.
+`INDEX` selects an instance from `blinker list` (e.g. `blinker reload 2`). Without it, defaults to port 9876. `--port` overrides both. `--repo` defaults to `blinker`. `--module` defaults to the addon folder name. `--blend` opens a `.blend` file on launch. `--clear` clears the console before reloading. Restart clears the console by default; pass `--no-clear` to keep it.
+
+## Running multiple instances in parallel
+
+Useful for developing several branches simultaneously. Use `git worktree` to get separate working copies, then launch each with a distinct `--port` and `--repo` (extensions) or `--module` (legacy):
+
+```
+git worktree add ../myaddon-feat feat/uvs
+blinker ../myaddon      --port 9876 --repo main
+blinker ../myaddon-feat --port 9877 --repo feat
+
+blinker list
+  1  9876  bl_ext.main.myaddon  D:\git\myaddon
+  2  9877  bl_ext.feat.myaddon  D:\git\myaddon-feat
+
+blinker reload 2
+```
+
+`--repo` is Blender's extensions-repo name (unrelated to git) — used purely to keep the two addons from colliding inside Blender. For legacy addons without `blender_manifest.toml`, use `--module name` instead.
 
 ## How it works
 
