@@ -547,47 +547,44 @@ class FolderRow(QFrame):
         self._build()
 
     def _build(self) -> None:
-        v = QVBoxLayout(self)
-        v.setContentsMargins(14, 12, 14, 12)
-        v.setSpacing(8)
-
-        head = QHBoxLayout()
-        head.setSpacing(10)
+        h = QHBoxLayout(self)
+        h.setContentsMargins(12, 6, 12, 6)
+        h.setSpacing(8)
 
         self.dot = QLabel("○")
         self.dot.setObjectName("statusDot")
         self.dot.setProperty("running", "false")
-        head.addWidget(self.dot)
+        h.addWidget(self.dot)
 
         self.path_lbl = QLabel(self.folder.path)
         self.path_lbl.setObjectName("pathLabel")
-        head.addWidget(self.path_lbl)
+        h.addWidget(self.path_lbl)
 
         self.meta_lbl = QLabel(self._meta_text())
         self.meta_lbl.setObjectName("metaLabel")
-        head.addWidget(self.meta_lbl)
-        head.addStretch(1)
+        h.addWidget(self.meta_lbl)
+
+        h.addStretch(1)
+
+        self.btn_row = QHBoxLayout()
+        self.btn_row.setSpacing(6)
+        h.addLayout(self.btn_row)
 
         self.fav_btn = QPushButton()
         self.fav_btn.setObjectName("favBtn")
         self.fav_btn.clicked.connect(self.favClicked)
-        head.addWidget(self.fav_btn)
+        h.addWidget(self.fav_btn)
         self._update_fav_btn()
 
         edit_btn = QPushButton("Edit")
         edit_btn.clicked.connect(self.editClicked)
-        head.addWidget(edit_btn)
+        h.addWidget(edit_btn)
 
         rm_btn = QPushButton("✕")
         rm_btn.setObjectName("removeBtn")
         rm_btn.clicked.connect(self.removeClicked)
-        head.addWidget(rm_btn)
+        h.addWidget(rm_btn)
 
-        v.addLayout(head)
-
-        self.btn_row = QHBoxLayout()
-        self.btn_row.setSpacing(6)
-        v.addLayout(self.btn_row)
         self._build_buttons()
 
     def _meta_text(self) -> str:
@@ -649,8 +646,6 @@ class FolderRow(QFrame):
                     btn = QPushButton(ai)
                 btn.clicked.connect(lambda _checked=False, a=ai: self.aiClicked.emit(a))
                 self.btn_row.addWidget(btn)
-
-        self.btn_row.addStretch(1)
 
     def update_state(self) -> None:
         self.path_lbl.setText(self.folder.path)
