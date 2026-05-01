@@ -198,7 +198,7 @@ def tcp_send(port: int, msg: str, timeout: float = 3.0) -> str:
 
 def is_running(port: int) -> bool:
     try:
-        with socket.create_connection(("127.0.0.1", port), timeout=0.15) as s:
+        with socket.create_connection(("127.0.0.1", port), timeout=1.0) as s:
             s.sendall(b"ping\n")
             return s.recv(64).decode().strip().startswith("pong")
     except Exception:
@@ -335,7 +335,30 @@ class Folder:
 
 # ---------- theming ----------
 
+def _write_arrow_svgs(color: str) -> tuple[str, str]:
+    """Write themed up/down arrow SVGs to a tmp dir and return their url-friendly paths."""
+    cache = Path(tempfile.gettempdir()) / "blinker_ui_arrows"
+    cache.mkdir(exist_ok=True)
+    safe = color.lstrip("#")
+    up = cache / f"up_{safe}.svg"
+    down = cache / f"down_{safe}.svg"
+    if not up.is_file():
+        up.write_text(
+            f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12">'
+            f'<path d="M2 8 L6 3 L10 8 Z" fill="{color}"/></svg>',
+            encoding="utf-8",
+        )
+    if not down.is_file():
+        down.write_text(
+            f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12">'
+            f'<path d="M2 4 L6 9 L10 4 Z" fill="{color}"/></svg>',
+            encoding="utf-8",
+        )
+    return str(up).replace("\\", "/"), str(down).replace("\\", "/")
+
+
 def stylesheet(t: dict) -> str:
+    arrow_up, arrow_down = _write_arrow_svgs(str(t['row_text_fg']))
     return f"""
     QMainWindow, QDialog {{
         background: {t['window_bg']};
@@ -418,11 +441,11 @@ def stylesheet(t: dict) -> str:
         padding: 4px 6px;
         selection-background-color: {t['accent_fg']};
     }}
-    QSpinBox {{ padding-right: 22px; min-height: 22px; }}
+    QSpinBox {{ padding-right: 28px; min-height: 24px; }}
     QSpinBox::up-button {{
         subcontrol-origin: border;
         subcontrol-position: top right;
-        width: 20px;
+        width: 26px;
         background: {t['button_bg']};
         border-left: 1px solid {t['row_border']};
         border-bottom: 1px solid {t['row_border']};
@@ -431,7 +454,7 @@ def stylesheet(t: dict) -> str:
     QSpinBox::down-button {{
         subcontrol-origin: border;
         subcontrol-position: bottom right;
-        width: 20px;
+        width: 26px;
         background: {t['button_bg']};
         border-left: 1px solid {t['row_border']};
         border-bottom-right-radius: 4px;
@@ -442,20 +465,8 @@ def stylesheet(t: dict) -> str:
     QSpinBox::up-button:pressed, QSpinBox::down-button:pressed {{
         background: {t['accent_fg']};
     }}
-    QSpinBox::up-arrow {{
-        image: none;
-        width: 0; height: 0;
-        border-left: 4px solid transparent;
-        border-right: 4px solid transparent;
-        border-bottom: 5px solid {t['row_text_fg']};
-    }}
-    QSpinBox::down-arrow {{
-        image: none;
-        width: 0; height: 0;
-        border-left: 4px solid transparent;
-        border-right: 4px solid transparent;
-        border-top: 5px solid {t['row_text_fg']};
-    }}
+    QSpinBox::up-arrow {{ image: url({arrow_up}); width: 10px; height: 10px; }}
+    QSpinBox::down-arrow {{ image: url({arrow_down}); width: 10px; height: 10px; }}
     QComboBox::drop-down {{
         subcontrol-origin: padding;
         subcontrol-position: center right;
@@ -467,11 +478,8 @@ def stylesheet(t: dict) -> str:
     }}
     QComboBox::drop-down:hover {{ background: {t['button_hover_bg']}; }}
     QComboBox::down-arrow {{
-        image: none;
-        width: 0; height: 0;
-        border-left: 4px solid transparent;
-        border-right: 4px solid transparent;
-        border-top: 5px solid {t['row_text_fg']};
+        image: url({arrow_down});
+        width: 10px; height: 10px;
     }}
     QComboBox QAbstractItemView {{
         background: {t['input_bg']};
@@ -530,11 +538,12 @@ class FolderRow(QFrame):
     launchClicked = Signal()
     reloadClicked = Signal()
     restartClicked = Signal()
-    stopClicked = Signal()
+    killClicked = Signal()
     clearClicked = Signal()
     editClicked = Signal()
     removeClicked = Signal()
     favClicked = Signal()
+    portChanged = Signal(int)
     aiClicked = Signal(str)
 
     def __init__(self, folder: Folder, ai_aliases: str, parent: QWidget | None = None) -> None:
@@ -566,6 +575,19 @@ class FolderRow(QFrame):
 
         h.addStretch(1)
 
+        port_lbl = QLabel("port")
+        port_lbl.setObjectName("metaLabel")
+        h.addWidget(port_lbl)
+
+        self.port_e = QSpinBox()
+        self.port_e.setRange(1024, 65535)
+        self.port_e.setValue(self.folder.port)
+        self.port_e.setFixedWidth(130)
+        self.port_e.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self.port_e.setToolTip("TCP port the bootstrap server listens on")
+        self.port_e.editingFinished.connect(self._on_port_edited)
+        h.addWidget(self.port_e)
+
         self.btn_row = QHBoxLayout()
         self.btn_row.setSpacing(6)
         h.addLayout(self.btn_row)
@@ -589,7 +611,7 @@ class FolderRow(QFrame):
 
     def _meta_text(self) -> str:
         f = self.folder
-        parts = [f"port {f.port}"]
+        parts: list[str] = []
         if f.module:
             parts.append(f"module={f.module}")
         if f.repo and f.repo != "blinker":
@@ -597,6 +619,11 @@ class FolderRow(QFrame):
         if f.blend:
             parts.append(f"blend={Path(f.blend).name}")
         return "   ·   ".join(parts)
+
+    def _on_port_edited(self) -> None:
+        v = int(self.port_e.value())
+        if v != self.folder.port:
+            self.portChanged.emit(v)
 
     @staticmethod
     def _clear_layout(layout: QHBoxLayout) -> None:
@@ -611,19 +638,21 @@ class FolderRow(QFrame):
     def _build_buttons(self) -> None:
         self._clear_layout(self.btn_row)
 
-        if self.folder.running:
-            for txt, sig in (
-                ("Reload", self.reloadClicked),
-                ("Restart", self.restartClicked),
-                ("Stop", self.stopClicked),
-            ):
-                b = QPushButton(txt)
-                b.clicked.connect(sig)
-                self.btn_row.addWidget(b)
-        else:
-            b = QPushButton("Launch")
-            b.clicked.connect(self.launchClicked)
-            self.btn_row.addWidget(b)
+        running = self.folder.running
+
+        primary = QPushButton("Kill" if running else "Launch")
+        primary.clicked.connect(self.killClicked if running else self.launchClicked)
+        self.btn_row.addWidget(primary)
+
+        reload_btn = QPushButton("Reload")
+        reload_btn.clicked.connect(self.reloadClicked)
+        reload_btn.setEnabled(running)
+        self.btn_row.addWidget(reload_btn)
+
+        restart_btn = QPushButton("Restart")
+        restart_btn.clicked.connect(self.restartClicked)
+        restart_btn.setEnabled(running)
+        self.btn_row.addWidget(restart_btn)
 
         clr = QPushButton("Clear console")
         clr.clicked.connect(self.clearClicked)
@@ -650,6 +679,10 @@ class FolderRow(QFrame):
     def update_state(self) -> None:
         self.path_lbl.setText(self.folder.path)
         self.meta_lbl.setText(self._meta_text())
+        if self.port_e.value() != self.folder.port:
+            self.port_e.blockSignals(True)
+            self.port_e.setValue(self.folder.port)
+            self.port_e.blockSignals(False)
         running = self.folder.running
         self.dot.setText("●" if running else "○")
         self.dot.setProperty("running", "true" if running else "false")
@@ -694,6 +727,7 @@ class MainWindow(QMainWindow):
         self.folders.sort(key=lambda f: not f.favourite)
         self.terminal: str = cfg.get("terminal", DEFAULT_TERMINAL)
         self.ai_aliases: str = cfg.get("ai_aliases", DEFAULT_AI_ALIASES)
+        self.blender_path: str = cfg.get("blender_path", "")
         self.theme: dict = {**DEFAULT_THEME, **cfg.get("theme", {})}
         self.selected_idx: int | None = 0 if self.folders else None
         self.rows: list[FolderRow] = []
@@ -781,8 +815,29 @@ class MainWindow(QMainWindow):
             "folders": [f.to_dict() for f in self.folders],
             "terminal": self.terminal,
             "ai_aliases": self.ai_aliases,
+            "blender_path": self.blender_path,
             "theme": self.theme,
         })
+
+    def _resolve_blender(self) -> str | None:
+        if self.blender_path and Path(self.blender_path).is_file():
+            return self.blender_path
+        return find_blender()
+
+    def _prompt_blender_path(self) -> str | None:
+        if sys.platform == "win32":
+            filt = "Blender (blender.exe);;All files (*)"
+        else:
+            filt = "Blender (blender);;All files (*)"
+        start = self.blender_path or ""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Locate Blender executable", start, filt,
+        )
+        if path and Path(path).is_file():
+            self.blender_path = path
+            self._save()
+            return path
+        return None
 
     # ----- list rendering -----
 
@@ -817,7 +872,8 @@ class MainWindow(QMainWindow):
             row.launchClicked.connect(lambda i=idx: self._launch(i))
             row.reloadClicked.connect(lambda i=idx: self._reload(i))
             row.restartClicked.connect(lambda i=idx: self._restart(i))
-            row.stopClicked.connect(lambda i=idx: self._stop(i))
+            row.killClicked.connect(lambda i=idx: self._kill(i))
+            row.portChanged.connect(lambda p, i=idx: self._change_port(i, p))
             row.clearClicked.connect(lambda i=idx: self._clear(i))
             row.aiClicked.connect(lambda ai, i=idx: self._open_ai(i, ai))
             self.list_layout.insertWidget(idx, row)
@@ -897,6 +953,19 @@ class MainWindow(QMainWindow):
             self._save()
             self._refresh_rows()
 
+    def _change_port(self, idx: int, port: int) -> None:
+        if not (0 <= idx < len(self.folders)):
+            return
+        f = self.folders[idx]
+        if f.port == port:
+            return
+        f.port = port
+        f.running = False  # state on the new port is unknown until next poll
+        self._save()
+        if 0 <= idx < len(self.rows):
+            self.rows[idx].update_state()
+        QTimer.singleShot(0, self._poll_status)
+
     def _toggle_fav(self, idx: int) -> None:
         if not (0 <= idx < len(self.folders)):
             return
@@ -956,10 +1025,19 @@ class MainWindow(QMainWindow):
         if not BOOTSTRAP.is_file():
             QMessageBox.critical(self, "Launch", f"bootstrap.py not found at:\n{BOOTSTRAP}")
             return
-        blender = find_blender()
+        blender = self._resolve_blender()
         if not blender:
-            QMessageBox.critical(self, "Launch", "Blender not found. Set BLENDER_PATH or install Blender.")
-            return
+            res = QMessageBox.question(
+                self, "Blender not found",
+                "Could not locate Blender automatically.\n\n"
+                "Pick the Blender executable now?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if res != QMessageBox.StandardButton.Yes:
+                return
+            blender = self._prompt_blender_path()
+            if not blender:
+                return
 
         legacy = not (addon_path / "blender_manifest.toml").exists()
         module = f.module or addon_path.name
@@ -982,6 +1060,9 @@ class MainWindow(QMainWindow):
         f.output.append(f"  port:   {f.port}\n\n")
 
         self._spawn_blender(idx, blender, env, f.blend or None)
+        f.running = True
+        if 0 <= idx < len(self.rows):
+            self.rows[idx].update_state()
         if idx == self.selected_idx:
             self._render_output()
 
@@ -1050,6 +1131,9 @@ class MainWindow(QMainWindow):
                 except Exception:
                     pass
             f.proc = None
+            f.running = False
+            if 0 <= idx < len(self.rows):
+                self.rows[idx].update_state()
 
     def _reload(self, idx: int) -> None:
         f = self.folders[idx]
@@ -1067,14 +1151,15 @@ class MainWindow(QMainWindow):
         if idx == self.selected_idx:
             self._append_pane(line)
 
-    def _stop(self, idx: int) -> None:
+    def _kill(self, idx: int) -> None:
         f = self.folders[idx]
         if f.proc is not None and f.proc.state() != QProcess.ProcessState.NotRunning:
             f.stop_requested = True
-            f.proc.terminate()
-            line = "[stop] terminated\n"
+            f.proc.kill()
+            line = "[kill] process killed\n"
         else:
-            line = "[stop] no managed process running\n"
+            resp = tcp_send(f.port, "kill")
+            line = f"[kill] {resp}\n"
         f.output.append(line)
         if idx == self.selected_idx:
             self._append_pane(line)
@@ -1140,7 +1225,11 @@ class MainWindow(QMainWindow):
     def _apply_statuses(self, statuses: dict) -> None:
         changed_indices: list[int] = []
         for i, f in enumerate(self.folders):
-            r = bool(statuses.get(f.port, False))
+            proc_alive = (
+                f.proc is not None
+                and f.proc.state() != QProcess.ProcessState.NotRunning
+            )
+            r = bool(statuses.get(f.port, False)) or proc_alive
             if r != f.running:
                 f.running = r
                 changed_indices.append(i)
@@ -1151,11 +1240,14 @@ class MainWindow(QMainWindow):
                 self.rows[i].update_state()
 
     def _open_settings(self) -> None:
-        dlg = SettingsDialog(self, self.theme, self.terminal, self.ai_aliases)
+        dlg = SettingsDialog(
+            self, self.theme, self.terminal, self.ai_aliases, self.blender_path,
+        )
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self.theme = dict(dlg.draft_theme)
             self.terminal = dlg.terminal_value
             self.ai_aliases = dlg.ai_aliases_value
+            self.blender_path = dlg.blender_path_value
             self._save()
             self._apply_theme()
             self._refresh_rows()
@@ -1329,7 +1421,10 @@ class EditFolderDialog(QDialog):
 # ---------- settings dialog ----------
 
 class SettingsDialog(QDialog):
-    def __init__(self, parent: QWidget, theme: dict, terminal: str, ai_aliases: str) -> None:
+    def __init__(
+        self, parent: QWidget, theme: dict, terminal: str,
+        ai_aliases: str, blender_path: str,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Settings")
         self.resize(760, 720)
@@ -1337,13 +1432,14 @@ class SettingsDialog(QDialog):
         self.draft_theme: dict = dict(theme)
         self.terminal_value: str = terminal
         self.ai_aliases_value: str = ai_aliases
+        self.blender_path_value: str = blender_path
         self.swatches: dict[str, QLabel] = {}
         self.hex_edits: dict[str, QLineEdit] = {}
 
         v = QVBoxLayout(self)
 
         tabs = QTabWidget()
-        tabs.addTab(self._terminal_tab(terminal, ai_aliases), "Terminal")
+        tabs.addTab(self._terminal_tab(terminal, ai_aliases, blender_path), "Terminal")
         tabs.addTab(self._fonts_tab(), "Fonts")
         tabs.addTab(self._colors_tab(), "Colors")
         v.addWidget(tabs, 1)
@@ -1370,9 +1466,21 @@ class SettingsDialog(QDialog):
 
     # ----- tabs -----
 
-    def _terminal_tab(self, terminal: str, ai_aliases: str) -> QWidget:
+    def _terminal_tab(self, terminal: str, ai_aliases: str, blender_path: str) -> QWidget:
         w = QWidget()
         form = QFormLayout(w)
+
+        self.blender_e = QLineEdit(blender_path)
+        self.blender_e.setPlaceholderText("(auto-detect: BLENDER_PATH, PATH, then standard install dirs)")
+        blender_row = QHBoxLayout()
+        blender_row.addWidget(self.blender_e, 1)
+        browse_btn = QPushButton("Browse…")
+        browse_btn.clicked.connect(self._browse_blender)
+        blender_row.addWidget(browse_btn)
+        auto_btn = QPushButton("Auto-detect")
+        auto_btn.clicked.connect(self._auto_blender)
+        blender_row.addWidget(auto_btn)
+        form.addRow("Blender executable", blender_row)
 
         self.terminal_e = QLineEdit(terminal)
         form.addRow("Terminal alias", self.terminal_e)
@@ -1381,6 +1489,7 @@ class SettingsDialog(QDialog):
         form.addRow("AI aliases", self.ai_e)
 
         hint = QLabel(
+            "Blender executable: explicit path overrides auto-detection. Leave blank to auto-detect.\n\n"
             "Terminal alias: shell command run when an AI button is clicked.\n"
             "  {path} = addon folder.   {cmd} = AI alias.\n"
             f"  Default:  {DEFAULT_TERMINAL}\n\n"
@@ -1396,6 +1505,29 @@ class SettingsDialog(QDialog):
         reset.clicked.connect(lambda: self.terminal_e.setText(DEFAULT_TERMINAL))
         form.addRow(reset)
         return w
+
+    def _browse_blender(self) -> None:
+        if sys.platform == "win32":
+            filt = "Blender (blender.exe);;All files (*)"
+        else:
+            filt = "Blender (blender);;All files (*)"
+        start = self.blender_e.text() or ""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Locate Blender executable", start, filt,
+        )
+        if path:
+            self.blender_e.setText(path)
+
+    def _auto_blender(self) -> None:
+        found = find_blender()
+        if found:
+            self.blender_e.setText(found)
+        else:
+            QMessageBox.information(
+                self, "Auto-detect",
+                "Could not locate Blender automatically.\n"
+                "Set BLENDER_PATH or browse to the executable.",
+            )
 
     def _fonts_tab(self) -> QWidget:
         w = QWidget()
@@ -1567,6 +1699,7 @@ class SettingsDialog(QDialog):
             self._refresh_swatch(key)
         self.terminal_e.setText(DEFAULT_TERMINAL)
         self.ai_e.setText(DEFAULT_AI_ALIASES)
+        self.blender_e.setText("")
         self._set_preset_silent(self._detect_preset())
 
     # ----- export / import -----
@@ -1645,6 +1778,7 @@ class SettingsDialog(QDialog):
         self.draft_theme["mono_font_size"] = int(self.mono_size_sp.value())
         self.terminal_value = self.terminal_e.text().strip() or DEFAULT_TERMINAL
         self.ai_aliases_value = self.ai_e.text().strip()
+        self.blender_path_value = self.blender_e.text().strip()
 
     def _apply(self) -> None:
         self._commit_inputs()
@@ -1653,6 +1787,7 @@ class SettingsDialog(QDialog):
             parent.theme = dict(self.draft_theme)
             parent.terminal = self.terminal_value
             parent.ai_aliases = self.ai_aliases_value
+            parent.blender_path = self.blender_path_value
             parent._save()
             parent._apply_theme()
             parent._refresh_rows()

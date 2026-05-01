@@ -275,25 +275,44 @@ def _poll():
 
     try:
         conn, _ = _server_socket.accept()
+    except BlockingIOError:
+        return 0.1
+    except Exception:
+        traceback.print_exc()
+        return 0.1
+
+    try:
         conn.settimeout(1.0)
         try:
             data = conn.recv(1024).decode().strip()
-            if data == "reload":
-                result = _reload_addon()
-            elif data.startswith("restart"):
-                parts = data.split(None, 1)
-                result = _prepare_restart(parts[1] if len(parts) > 1 else None)
-            elif data == "ping":
-                result = f"pong\t{_full_module}\t{_addon_path}"
-            else:
-                result = f"error: unknown command '{data}'"
+        except (ConnectionResetError, ConnectionAbortedError, socket.timeout):
+            return 0.1  # client gave up before we read; common with idle-timer ping probes
+        if data == "reload":
+            result = _reload_addon()
+        elif data.startswith("restart"):
+            parts = data.split(None, 1)
+            result = _prepare_restart(parts[1] if len(parts) > 1 else None)
+        elif data == "kill":
+            _log("Kill requested")
+            def _quit_now():
+                os._exit(0)
+            bpy.app.timers.register(_quit_now, first_interval=0.1)
+            result = "ok"
+        elif data == "ping":
+            result = f"pong\t{_full_module}\t{_addon_path}"
+        else:
+            result = f"error: unknown command '{data}'"
+        try:
             conn.sendall((result + "\n").encode())
-        finally:
-            conn.close()
-    except BlockingIOError:
-        pass
+        except (ConnectionResetError, ConnectionAbortedError):
+            pass
     except Exception:
         traceback.print_exc()
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
     return 0.1  # poll every 100ms
 
