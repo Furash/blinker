@@ -210,5 +210,8 @@ __marimo__/
 # Blinker UI runtime state
 blinker_ui_config.json
 
+# Vendored UPX (auto-downloaded by build_exe.cmd)
+tools/upx/
+
 # Claude Code
 .claude/

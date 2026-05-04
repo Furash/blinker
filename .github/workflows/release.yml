@@ -37,8 +37,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install pyinstaller PySide6
 
-      - name: Build with PyInstaller
-        run: pyinstaller --noconfirm --clean BlinkerUI.spec
+      - name: Build with PyInstaller (downloads UPX, force-compresses CFG DLLs)
+        shell: cmd
+        run: build_exe.cmd
 
       - name: Verify version matches tag
         shell: pwsh

@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import ctypes
 import hashlib
+import io
 import json
 import os
 import shutil
@@ -12,16 +14,15 @@ import subprocess
 import sys
 import tempfile
 import threading
-import urllib.error
-import urllib.request
+from ctypes import wintypes
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from PySide6.QtCore import (
     QProcess, QProcessEnvironment, QSize, Qt, QTimer, Signal,
 )
 from PySide6.QtGui import QAction, QColor, QFont, QFontDatabase, QIcon, QTextCursor
-from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
     QApplication, QColorDialog, QComboBox, QDialog, QDialogButtonBox,
     QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout, QLabel,
@@ -250,24 +251,165 @@ def _parse_semver(s: str) -> tuple[int, int, int]:
     return out[0], out[1], out[2]
 
 
+# WinHTTP-backed HTTP client (avoids _ssl/libcrypto/libssl in the bundle).
+
+class HTTPError(Exception):
+    def __init__(self, code: int, reason: str = "") -> None:
+        self.code = code
+        self.reason = reason
+        super().__init__(f"HTTP {code} {reason}".rstrip())
+
+
+_winhttp = ctypes.WinDLL("winhttp")
+
+_WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY = 4
+_WINHTTP_FLAG_SECURE = 0x00800000
+_WINHTTP_QUERY_STATUS_CODE = 19
+_WINHTTP_QUERY_FLAG_NUMBER = 0x20000000
+_WINHTTP_ADDREQ_FLAG_ADD = 0x20000000
+_WINHTTP_ADDREQ_FLAG_REPLACE = 0x80000000
+_WINHTTP_OPTION_REDIRECT_POLICY = 88
+_WINHTTP_OPTION_REDIRECT_POLICY_ALWAYS = 1
+
+_winhttp.WinHttpOpen.argtypes = [
+    wintypes.LPCWSTR, wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD
+]
+_winhttp.WinHttpOpen.restype = wintypes.HANDLE
+_winhttp.WinHttpConnect.argtypes = [
+    wintypes.HANDLE, wintypes.LPCWSTR, ctypes.c_uint16, wintypes.DWORD
+]
+_winhttp.WinHttpConnect.restype = wintypes.HANDLE
+_winhttp.WinHttpOpenRequest.argtypes = [
+    wintypes.HANDLE, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.LPCWSTR,
+    wintypes.LPCWSTR, ctypes.c_void_p, wintypes.DWORD,
+]
+_winhttp.WinHttpOpenRequest.restype = wintypes.HANDLE
+_winhttp.WinHttpAddRequestHeaders.argtypes = [
+    wintypes.HANDLE, wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD
+]
+_winhttp.WinHttpAddRequestHeaders.restype = wintypes.BOOL
+_winhttp.WinHttpSendRequest.argtypes = [
+    wintypes.HANDLE, wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p,
+    wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+]
+_winhttp.WinHttpSendRequest.restype = wintypes.BOOL
+_winhttp.WinHttpReceiveResponse.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+_winhttp.WinHttpReceiveResponse.restype = wintypes.BOOL
+_winhttp.WinHttpQueryHeaders.argtypes = [
+    wintypes.HANDLE, wintypes.DWORD, wintypes.LPCWSTR, ctypes.c_void_p,
+    ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(wintypes.DWORD),
+]
+_winhttp.WinHttpQueryHeaders.restype = wintypes.BOOL
+_winhttp.WinHttpReadData.argtypes = [
+    wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)
+]
+_winhttp.WinHttpReadData.restype = wintypes.BOOL
+_winhttp.WinHttpCloseHandle.argtypes = [wintypes.HANDLE]
+_winhttp.WinHttpCloseHandle.restype = wintypes.BOOL
+_winhttp.WinHttpSetOption.argtypes = [
+    wintypes.HANDLE, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD
+]
+_winhttp.WinHttpSetOption.restype = wintypes.BOOL
+_winhttp.WinHttpSetTimeouts.argtypes = [
+    wintypes.HANDLE, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int
+]
+_winhttp.WinHttpSetTimeouts.restype = wintypes.BOOL
+
+
+def _winhttp_stream(url: str, headers: dict, sink, timeout: float) -> None:
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https"):
+        raise ValueError(f"unsupported scheme: {parts.scheme!r}")
+    secure = parts.scheme == "https"
+    host = parts.hostname or ""
+    port = parts.port or (443 if secure else 80)
+    path = parts.path or "/"
+    if parts.query:
+        path += "?" + parts.query
+
+    h_session = _winhttp.WinHttpOpen(
+        f"BlinkerUI/{__version__}", _WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, None, None, 0,
+    )
+    if not h_session:
+        raise OSError(f"WinHttpOpen failed (err={ctypes.get_last_error()})")
+    try:
+        ms = max(1000, int(timeout * 1000))
+        _winhttp.WinHttpSetTimeouts(h_session, ms, ms, ms, ms)
+        policy = wintypes.DWORD(_WINHTTP_OPTION_REDIRECT_POLICY_ALWAYS)
+        _winhttp.WinHttpSetOption(
+            h_session, _WINHTTP_OPTION_REDIRECT_POLICY,
+            ctypes.byref(policy), ctypes.sizeof(policy),
+        )
+
+        h_conn = _winhttp.WinHttpConnect(h_session, host, port, 0)
+        if not h_conn:
+            raise OSError(f"WinHttpConnect failed (err={ctypes.get_last_error()})")
+        try:
+            flags = _WINHTTP_FLAG_SECURE if secure else 0
+            h_req = _winhttp.WinHttpOpenRequest(
+                h_conn, "GET", path, None, None, None, flags,
+            )
+            if not h_req:
+                raise OSError(f"WinHttpOpenRequest failed (err={ctypes.get_last_error()})")
+            try:
+                hdr_str = "\r\n".join(f"{k}: {v}" for k, v in headers.items())
+                if hdr_str and not _winhttp.WinHttpAddRequestHeaders(
+                    h_req, hdr_str, len(hdr_str),
+                    _WINHTTP_ADDREQ_FLAG_ADD | _WINHTTP_ADDREQ_FLAG_REPLACE,
+                ):
+                    raise OSError(f"WinHttpAddRequestHeaders failed (err={ctypes.get_last_error()})")
+                if not _winhttp.WinHttpSendRequest(h_req, None, 0, None, 0, 0, None):
+                    raise OSError(f"WinHttpSendRequest failed (err={ctypes.get_last_error()})")
+                if not _winhttp.WinHttpReceiveResponse(h_req, None):
+                    raise OSError(f"WinHttpReceiveResponse failed (err={ctypes.get_last_error()})")
+
+                status = wintypes.DWORD(0)
+                size = wintypes.DWORD(ctypes.sizeof(status))
+                idx = wintypes.DWORD(0)
+                if not _winhttp.WinHttpQueryHeaders(
+                    h_req, _WINHTTP_QUERY_STATUS_CODE | _WINHTTP_QUERY_FLAG_NUMBER,
+                    None, ctypes.byref(status), ctypes.byref(size), ctypes.byref(idx),
+                ):
+                    raise OSError(f"WinHttpQueryHeaders failed (err={ctypes.get_last_error()})")
+                if status.value >= 400:
+                    raise HTTPError(status.value)
+
+                buf = ctypes.create_string_buffer(64 * 1024)
+                read = wintypes.DWORD(0)
+                while True:
+                    if not _winhttp.WinHttpReadData(
+                        h_req, buf, len(buf), ctypes.byref(read),
+                    ):
+                        raise OSError(f"WinHttpReadData failed (err={ctypes.get_last_error()})")
+                    if read.value == 0:
+                        break
+                    sink.write(buf.raw[:read.value])
+            finally:
+                _winhttp.WinHttpCloseHandle(h_req)
+        finally:
+            _winhttp.WinHttpCloseHandle(h_conn)
+    finally:
+        _winhttp.WinHttpCloseHandle(h_session)
+
+
 def _http_json(url: str, timeout: float = 10.0) -> dict:
-    req = urllib.request.Request(
+    sink = io.BytesIO()
+    _winhttp_stream(
         url,
-        headers={
+        {
             "User-Agent": f"BlinkerUI/{__version__}",
             "Accept": "application/vnd.github+json",
         },
+        sink, timeout,
     )
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read().decode("utf-8"))
+    return json.loads(sink.getvalue().decode("utf-8"))
 
 
 def _http_download(url: str, dest: Path, timeout: float = 60.0) -> None:
-    req = urllib.request.Request(
-        url, headers={"User-Agent": f"BlinkerUI/{__version__}"}
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as r, open(dest, "wb") as f:
-        shutil.copyfileobj(r, f)
+    with open(dest, "wb") as f:
+        _winhttp_stream(
+            url, {"User-Agent": f"BlinkerUI/{__version__}"}, f, timeout,
+        )
 
 
 def _sha256_hex(path: Path) -> str:
@@ -1396,7 +1538,7 @@ class MainWindow(QMainWindow):
             return
         try:
             release = _http_json(UPDATE_API)
-        except urllib.error.HTTPError as e:
+        except HTTPError as e:
             QMessageBox.warning(
                 self, "Updates",
                 f"GitHub returned HTTP {e.code}. Check the repo URL or try later.",
@@ -2027,69 +2169,87 @@ def _set_windows_aumid(aumid: str) -> None:
     if sys.platform != "win32":
         return
     try:
-        import ctypes
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(aumid)
     except Exception:
         pass
 
 
-SINGLETON_KEY = "blinker-ui-singleton"
+# Win32 single-instance: named mutex for "another instance running?" check,
+# and a wake-file polled by a QTimer so the second launch can raise the first.
+SINGLETON_MUTEX = "Local\\blinker-ui-singleton"
+WAKE_FILE = Path(tempfile.gettempdir()) / "blinker-ui.wake"
+_ERROR_ALREADY_EXISTS = 183
 
 
-def _try_wake_existing() -> bool:
-    sock = QLocalSocket()
-    sock.connectToServer(SINGLETON_KEY)
-    if not sock.waitForConnected(500):
-        return False
-    sock.write(b"raise\n")
-    sock.flush()
-    sock.waitForBytesWritten(500)
-    sock.disconnectFromServer()
-    return True
+def _acquire_singleton() -> int | None:
+    """Return mutex handle if we are the first instance, else None."""
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateMutexW.restype = wintypes.HANDLE
+    kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel32.GetLastError.restype = wintypes.DWORD
+    h = kernel32.CreateMutexW(None, False, SINGLETON_MUTEX)
+    if not h:
+        return None
+    if kernel32.GetLastError() == _ERROR_ALREADY_EXISTS:
+        kernel32.CloseHandle(h)
+        return None
+    return h
 
 
-def _start_singleton_server(window: "MainWindow") -> QLocalServer:
-    QLocalServer.removeServer(SINGLETON_KEY)
-    server = QLocalServer()
-    if not server.listen(SINGLETON_KEY):
-        return server
+def _signal_wake() -> None:
+    try:
+        WAKE_FILE.write_text(str(os.getpid()), encoding="ascii")
+    except OSError:
+        pass
 
-    def on_new() -> None:
-        sock = server.nextPendingConnection()
-        if sock is None:
+
+def _install_wake_watcher(window: "MainWindow") -> QTimer:
+    try:
+        WAKE_FILE.unlink()
+    except FileNotFoundError:
+        pass
+    state = {"mtime": 0.0}
+
+    def tick() -> None:
+        try:
+            mtime = WAKE_FILE.stat().st_mtime
+        except FileNotFoundError:
             return
+        if mtime == state["mtime"]:
+            return
+        state["mtime"] = mtime
+        if window.isMinimized():
+            window.showNormal()
+        else:
+            window.show()
+        window.raise_()
+        window.activateWindow()
 
-        def handle() -> None:
-            sock.readAll()
-            if window.isMinimized():
-                window.showNormal()
-            else:
-                window.show()
-            window.raise_()
-            window.activateWindow()
-            sock.disconnectFromServer()
-
-        sock.readyRead.connect(handle)
-
-    server.newConnection.connect(on_new)
-    return server
+    timer = QTimer(window)
+    timer.timeout.connect(tick)
+    timer.start(750)
+    return timer
 
 
 def main() -> None:
     _set_windows_aumid("blinker.ui")
+
+    mutex = _acquire_singleton()
+    if mutex is None:
+        _signal_wake()
+        return
+
     app = QApplication(sys.argv)
     app.setApplicationName("Blinker UI")
     app.setOrganizationName("blinker")
     app.setStyle("Fusion")
 
-    if _try_wake_existing():
-        return
-
     if LOGO.is_file():
         icon = QIcon(str(LOGO))
         app.setWindowIcon(icon)
     win = MainWindow()
-    win._singleton_server = _start_singleton_server(win)  # type: ignore[attr-defined]
+    win._singleton_mutex = mutex  # type: ignore[attr-defined]
+    win._wake_watcher = _install_wake_watcher(win)  # type: ignore[attr-defined]
     win.show()
     sys.exit(app.exec())
 
