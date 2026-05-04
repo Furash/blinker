@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -11,6 +12,8 @@ import subprocess
 import sys
 import tempfile
 import threading
+import urllib.error
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -26,6 +29,13 @@ from PySide6.QtWidgets import (
     QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QSpinBox,
     QSplitter, QTabWidget, QToolBar, QVBoxLayout, QWidget,
 )
+
+# ---------- version / update endpoint ----------
+
+__version__ = "0.1.0"
+GITHUB_REPO = "Furash/blinker"
+UPDATE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+
 
 # ---------- paths (handles PyInstaller --onefile) ----------
 
@@ -183,6 +193,126 @@ def load_config() -> dict:
 
 def save_config(cfg: dict) -> None:
     CONFIG.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+
+
+# ---------- self-update ----------
+
+UPDATER_PS1 = r'''
+param(
+    [int]$WaitPid,
+    [string]$Zip,
+    [string]$Install,
+    [string]$Exe
+)
+$ErrorActionPreference = "Stop"
+$leaf = Split-Path -Leaf $Install
+$bak  = "$Install.bak"
+try {
+    $proc = Get-Process -Id $WaitPid -ErrorAction SilentlyContinue
+    if ($proc) { $proc.WaitForExit(15000) | Out-Null }
+    Start-Sleep -Milliseconds 500
+
+    $stage = Join-Path $env:TEMP "blinker_update_stage"
+    if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
+    Expand-Archive -Path $Zip -DestinationPath $stage -Force
+
+    $sub = Get-ChildItem -Path $stage -Directory | Select-Object -First 1
+    if ($sub) { $src = $sub.FullName } else { $src = $stage }
+
+    if (Test-Path $bak)     { Remove-Item -Recurse -Force $bak }
+    if (Test-Path $Install) { Rename-Item -Path $Install -NewName ($leaf + ".bak") }
+    Move-Item -Path $src -Destination $Install
+
+    $newExe = Join-Path $Install (Split-Path -Leaf $Exe)
+    Start-Process -FilePath $newExe -WorkingDirectory $Install
+    Remove-Item -Recurse -Force $bak   -ErrorAction SilentlyContinue
+    Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
+    Remove-Item -Force $Zip            -ErrorAction SilentlyContinue
+} catch {
+    if ((Test-Path $bak) -and -not (Test-Path $Install)) {
+        Rename-Item -Path $bak -NewName $leaf
+    }
+    Add-Type -AssemblyName System.Windows.Forms
+    [System.Windows.Forms.MessageBox]::Show("BlinkerUI update failed:`n$_", "BlinkerUI", 0, 16) | Out-Null
+}
+'''
+
+
+def _parse_semver(s: str) -> tuple[int, int, int]:
+    s = (s or "").strip().lstrip("vV").split("-")[0].split("+")[0]
+    parts = (s.split(".") + ["0", "0", "0"])[:3]
+    out = []
+    for p in parts:
+        try:
+            out.append(int(p))
+        except ValueError:
+            out.append(0)
+    return out[0], out[1], out[2]
+
+
+def _http_json(url: str, timeout: float = 10.0) -> dict:
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": f"BlinkerUI/{__version__}",
+            "Accept": "application/vnd.github+json",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+def _http_download(url: str, dest: Path, timeout: float = 60.0) -> None:
+    req = urllib.request.Request(
+        url, headers={"User-Agent": f"BlinkerUI/{__version__}"}
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as r, open(dest, "wb") as f:
+        shutil.copyfileobj(r, f)
+
+
+def _sha256_hex(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _find_release_assets(release: dict) -> tuple[dict | None, dict | None]:
+    """Return (zip_asset, sha256_asset)."""
+    zip_a = sha_a = None
+    for a in release.get("assets") or []:
+        name = (a.get("name") or "").lower()
+        if name.endswith(".zip.sha256"):
+            sha_a = a
+        elif name.endswith(".zip"):
+            zip_a = a
+    return zip_a, sha_a
+
+
+def _spawn_updater(zip_path: Path) -> None:
+    install_dir = APP_DIR
+    exe_path = Path(sys.executable)
+    script_path = Path(tempfile.gettempdir()) / "blinker_updater.ps1"
+    script_path.write_text(UPDATER_PS1, encoding="utf-8")
+    args = [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-WindowStyle", "Hidden",
+        "-File", str(script_path),
+        "-WaitPid", str(os.getpid()),
+        "-Zip", str(zip_path),
+        "-Install", str(install_dir),
+        "-Exe", str(exe_path),
+    ]
+    DETACHED_PROCESS = 0x00000008
+    CREATE_NEW_PROCESS_GROUP = 0x00000200
+    subprocess.Popen(
+        args,
+        creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+        close_fds=True,
+    )
 
 
 # ---------- TCP / blender helpers ----------
@@ -718,7 +848,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Blinker UI")
+        self.setWindowTitle(f"Blinker UI  v{__version__}")
         self.resize(1100, 820)
 
         cfg = load_config()
@@ -759,6 +889,10 @@ class MainWindow(QMainWindow):
         settings_act = QAction("Settings…", self)
         settings_act.triggered.connect(self._open_settings)
         tb.addAction(settings_act)
+
+        update_act = QAction("Check for updates", self)
+        update_act.triggered.connect(self._check_for_updates)
+        tb.addAction(update_act)
 
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -1251,6 +1385,96 @@ class MainWindow(QMainWindow):
             self._save()
             self._apply_theme()
             self._refresh_rows()
+
+    def _check_for_updates(self) -> None:
+        if not FROZEN:
+            QMessageBox.information(
+                self, "Updates",
+                f"Running from source (v{__version__}).\n"
+                "Self-update only applies to packaged builds.",
+            )
+            return
+        try:
+            release = _http_json(UPDATE_API)
+        except urllib.error.HTTPError as e:
+            QMessageBox.warning(
+                self, "Updates",
+                f"GitHub returned HTTP {e.code}. Check the repo URL or try later.",
+            )
+            return
+        except Exception as e:
+            QMessageBox.warning(self, "Updates", f"Could not check for updates:\n{e}")
+            return
+
+        tag = (release.get("tag_name") or "").strip()
+        cur = _parse_semver(__version__)
+        new = _parse_semver(tag)
+        if not tag or new <= cur:
+            QMessageBox.information(
+                self, "Updates",
+                f"You are on the latest version (v{__version__}).",
+            )
+            return
+
+        zip_asset, sha_asset = _find_release_assets(release)
+        if zip_asset is None:
+            QMessageBox.warning(
+                self, "Updates",
+                f"Release {tag} has no .zip asset to install.",
+            )
+            return
+
+        notes = (release.get("body") or "").strip()
+        notes_preview = ("\n\n" + notes[:500] + ("…" if len(notes) > 500 else "")) if notes else ""
+        res = QMessageBox.question(
+            self, "Update available",
+            f"A new version is available.\n\n"
+            f"Current:  v{__version__}\nLatest:   {tag}\n\n"
+            f"BlinkerUI will download, close, replace itself, and relaunch."
+            f"{notes_preview}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if res != QMessageBox.StandardButton.Yes:
+            return
+
+        tmp = Path(tempfile.gettempdir())
+        zip_path = tmp / zip_asset["name"]
+        try:
+            _http_download(zip_asset["browser_download_url"], zip_path)
+        except Exception as e:
+            QMessageBox.critical(self, "Updates", f"Download failed:\n{e}")
+            return
+
+        if sha_asset is not None:
+            try:
+                sha_path = tmp / sha_asset["name"]
+                _http_download(sha_asset["browser_download_url"], sha_path)
+                expected = sha_path.read_text(encoding="utf-8").strip().split()[0].lower()
+                actual = _sha256_hex(zip_path)
+                if expected != actual:
+                    zip_path.unlink(missing_ok=True)
+                    QMessageBox.critical(
+                        self, "Updates",
+                        f"SHA256 mismatch — aborting.\n\nexpected {expected}\nactual   {actual}",
+                    )
+                    return
+            except Exception as e:
+                cont = QMessageBox.warning(
+                    self, "Updates",
+                    f"Could not verify SHA256 ({e}).\nProceed anyway?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                )
+                if cont != QMessageBox.StandardButton.Yes:
+                    zip_path.unlink(missing_ok=True)
+                    return
+
+        try:
+            _spawn_updater(zip_path)
+        except Exception as e:
+            QMessageBox.critical(self, "Updates", f"Could not launch updater:\n{e}")
+            return
+
+        QApplication.quit()
 
     def closeEvent(self, ev) -> None:
         for f in self.folders:
