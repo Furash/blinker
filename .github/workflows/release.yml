@@ -4,6 +4,11 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v0.1.0)'
+        required: true
 
 permissions:
   contents: write
@@ -12,7 +17,16 @@ jobs:
   build-windows:
     runs-on: windows-latest
     steps:
+      - name: Resolve tag
+        id: resolve
+        shell: pwsh
+        run: |
+          $tag = if ("${{ github.event_name }}" -eq "workflow_dispatch") { "${{ inputs.tag }}" } else { "${{ github.ref_name }}" }
+          "tag=$tag" | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
+
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.resolve.outputs.tag }}
 
       - uses: actions/setup-python@v5
         with:
@@ -29,7 +43,7 @@ jobs:
       - name: Verify version matches tag
         shell: pwsh
         run: |
-          $tag = "${{ github.ref_name }}".TrimStart("v")
+          $tag = "${{ steps.resolve.outputs.tag }}".TrimStart("v")
           $py = Get-Content blinker_ui.py -Raw
           if ($py -notmatch '__version__\s*=\s*"' + [regex]::Escape($tag) + '"') {
             Write-Error "Tag $tag does not match __version__ in blinker_ui.py"
@@ -39,7 +53,7 @@ jobs:
       - name: Package zip + SHA256
         shell: pwsh
         run: |
-          $tag = "${{ github.ref_name }}"
+          $tag = "${{ steps.resolve.outputs.tag }}"
           $zip = "BlinkerUI-$tag.zip"
           Compress-Archive -Path dist/BlinkerUI -DestinationPath $zip
           $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
@@ -50,6 +64,7 @@ jobs:
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.resolve.outputs.tag }}
           files: |
             ${{ env.ZIP_PATH }}
             ${{ env.SHA_PATH }}
