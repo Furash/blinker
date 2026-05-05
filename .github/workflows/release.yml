@@ -22,7 +22,13 @@ jobs:
         shell: pwsh
         run: |
           $tag = if ("${{ github.event_name }}" -eq "workflow_dispatch") { "${{ inputs.tag }}" } else { "${{ github.ref_name }}" }
-          "tag=$tag" | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
+          if ($tag -notmatch '^v\d+\.\d+\.\d+([-+].+)?$') {
+            Write-Error "Tag '$tag' must match v<MAJOR>.<MINOR>.<PATCH> (e.g. v0.1.1)"
+            exit 1
+          }
+          $version = $tag.Substring(1)
+          "tag=$tag"         | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
+          "version=$version" | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
 
       - uses: actions/checkout@v4
         with:
@@ -37,19 +43,22 @@ jobs:
           python -m pip install --upgrade pip
           pip install pyinstaller PySide6
 
+      - name: Stamp version from tag
+        shell: pwsh
+        run: |
+          $version = "${{ steps.resolve.outputs.version }}"
+          $path = "blinker_ui.py"
+          $py = Get-Content $path -Raw
+          $new = [regex]::Replace($py, '(?m)^__version__\s*=\s*"[^"]*"', "__version__ = `"$version`"")
+          if ($new -eq $py) {
+            Write-Error "Failed to stamp __version__ in $path (pattern not found)"
+            exit 1
+          }
+          Set-Content -Path $path -Value $new -NoNewline -Encoding utf8
+
       - name: Build with PyInstaller (downloads UPX, force-compresses CFG DLLs)
         shell: cmd
         run: build_exe.cmd
-
-      - name: Verify version matches tag
-        shell: pwsh
-        run: |
-          $tag = "${{ steps.resolve.outputs.tag }}".TrimStart("v")
-          $py = Get-Content blinker_ui.py -Raw
-          if ($py -notmatch '__version__\s*=\s*"' + [regex]::Escape($tag) + '"') {
-            Write-Error "Tag $tag does not match __version__ in blinker_ui.py"
-            exit 1
-          }
 
       - name: Package zip + SHA256
         shell: pwsh
