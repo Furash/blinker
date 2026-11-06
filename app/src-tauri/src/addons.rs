@@ -43,7 +43,6 @@ pub enum AddonKind {
     Legacy,
 }
 
-#[allow(dead_code)]
 pub fn addon_kind(dir: &Path) -> Option<AddonKind> {
     let manifest = dir.join("blender_manifest.toml");
     if manifest.is_file() {
@@ -64,7 +63,6 @@ pub fn addon_kind(dir: &Path) -> Option<AddonKind> {
     None
 }
 
-#[allow(dead_code)]
 pub fn find_addons(root: &Path, max_depth: usize) -> Vec<(PathBuf, AddonKind)> {
     fn walk(p: &Path, depth: usize, max_depth: usize, out: &mut Vec<(PathBuf, AddonKind)>) {
         if depth > max_depth {

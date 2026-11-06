@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
 /// `%APPDATA%\BlinkerUI\blinker_ui_config.json`
-#[allow(dead_code)]
 pub fn config_path() -> PathBuf {
     let base = std::env::var_os("APPDATA")
         .map(PathBuf::from)
@@ -10,7 +9,6 @@ pub fn config_path() -> PathBuf {
 }
 
 /// Legacy location: next to the executable.
-#[allow(dead_code)]
 pub fn legacy_config_path() -> Option<PathBuf> {
     std::env::current_exe()
         .ok()

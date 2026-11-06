@@ -30,7 +30,6 @@ fn exchange(port: u16, msg: &str, timeout: Duration, max: usize) -> std::io::Res
     Ok(String::from_utf8_lossy(&buf[..n]).trim().to_string())
 }
 
-#[allow(dead_code)]
 pub fn tcp_send(port: u16, msg: &str, timeout: Duration) -> String {
     match exchange(port, msg, timeout, 1024) {
         Ok(r) => r,
@@ -108,7 +107,6 @@ fn poller_loop<P, E>(
     }
 }
 
-#[allow(dead_code)]
 pub fn start_poller(app: AppHandle, ports: Arc<Mutex<Vec<u16>>>) {
     let stop = Arc::new(AtomicBool::new(false));
     std::thread::spawn(move || {

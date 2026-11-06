@@ -8,7 +8,6 @@ use std::time::{Duration, Instant};
 
 use crate::config::Folder;
 
-#[allow(dead_code)]
 pub fn find_blender(env_path: Option<&str>) -> Option<String> {
     let roots: Vec<PathBuf> = ["PROGRAMFILES", "PROGRAMFILES(X86)"]
         .iter()
@@ -60,7 +59,6 @@ fn find_blender_in(
 pub const HISTORY_MAX_LINES: usize = 20000;
 
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
 pub struct LaunchSpec {
     pub blender: String,
     pub bootstrap: PathBuf,
@@ -245,7 +243,6 @@ pub struct Supervisor {
     shared: Arc<Shared>,
 }
 
-#[allow(dead_code)]
 impl Supervisor {
     pub fn new(sink: Arc<dyn OutputSink>) -> Self {
         Self::with_temp_dir(sink, std::env::temp_dir())
@@ -384,6 +381,7 @@ impl Supervisor {
         true
     }
 
+    #[allow(dead_code)] // test/diagnostic helper
     pub fn is_alive(&self, port: u16) -> bool {
         lock(&self.shared.state).slots.get(&port).is_some_and(|s| s.alive)
     }
@@ -757,7 +755,6 @@ const BOOTSTRAP_PY: &str = include_str!(concat!(env!("OUT_DIR"), "/bootstrap.py"
 const BOOTSTRAP_NAME: &str = "blinker_bootstrap.py";
 
 /// Writes the embedded bootstrap to `%TEMP%\blinker_bootstrap.py` (only if it differs).
-#[allow(dead_code)]
 pub fn write_bootstrap() -> io::Result<PathBuf> {
     write_bootstrap_to(&std::env::temp_dir())
 }

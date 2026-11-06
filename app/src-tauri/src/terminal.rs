@@ -1,5 +1,4 @@
 //! Terminal launchers ("Open AI") and "Open folder".
-#![allow(dead_code)] // wired up by later tasks
 
 use std::fmt;
 use std::io::Read;

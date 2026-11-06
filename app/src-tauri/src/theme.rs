@@ -1,9 +1,9 @@
-#![allow(dead_code)]
 
 use serde_json::Value;
 
 type Map = serde_json::Map<String, Value>;
 
+#[allow(dead_code)] // reimplemented in the webview; kept with its tests
 pub const CUSTOM_PRESET: &str = "Custom";
 pub const PRESET_NAMES: [&str; 3] = ["Tokyo Night (default)", "Frigus Nox", "Light"];
 
@@ -76,6 +76,7 @@ pub fn merge_with_default(user: &Map) -> Map {
 }
 
 /// Name of the built-in preset whose 18 colours all equal `theme`'s, else "Custom".
+#[allow(dead_code)] // reimplemented in the webview; kept with its tests
 pub fn detect_preset(theme: &Map) -> String {
     for name in PRESET_NAMES {
         let p = preset(name).expect("builtin preset exists");
@@ -86,6 +87,7 @@ pub fn detect_preset(theme: &Map) -> String {
     CUSTOM_PRESET.to_string()
 }
 
+#[allow(dead_code)] // reimplemented in the webview; kept with its tests
 pub fn normalize_hex(s: &str) -> Option<String> {
     let s = s.trim().trim_start_matches('#');
     let is_hex = |s: &str| s.chars().all(|c| c.is_ascii_hexdigit());

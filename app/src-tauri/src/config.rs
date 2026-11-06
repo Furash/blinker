@@ -90,7 +90,6 @@ pub fn default_terminal() -> String {
 
 /// Never fails: missing, empty, invalid or hand-edited files fall back to defaults
 /// field by field. Unknown keys are preserved in `extra`.
-#[allow(dead_code)]
 pub fn load(path: &Path) -> Config {
     let mut cfg = Config::default();
     let Ok(bytes) = std::fs::read(path) else { return cfg };
@@ -220,7 +219,6 @@ fn parse_folder(v: &Value) -> Option<Folder> {
 }
 
 /// Pretty JSON (indent 2), written atomically via temp file + rename.
-#[allow(dead_code)]
 pub fn save(path: &Path, cfg: &Config) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -257,7 +255,6 @@ pub fn save(path: &Path, cfg: &Config) -> io::Result<()> {
 }
 
 /// Copies `legacy` to `new` once: only if `new` is absent and `legacy` exists.
-#[allow(dead_code)]
 pub fn migrate_legacy_config(new: &Path, legacy: &Path) -> bool {
     if new.exists() || !legacy.is_file() {
         return false;
@@ -271,7 +268,6 @@ pub fn migrate_legacy_config(new: &Path, legacy: &Path) -> bool {
 }
 
 /// Favourites first; order otherwise unchanged (stable).
-#[allow(dead_code)]
 pub fn sorted_folders(mut folders: Vec<Folder>) -> Vec<Folder> {
     folders.sort_by_key(|f| !f.favourite);
     folders
