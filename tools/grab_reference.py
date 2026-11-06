@@ -54,6 +54,11 @@ VARIANTS = {
     "frigus_state_100": ("Frigus Nox", "1", "state", 1100),
     "light_state_100": ("Light", "1", "state", 1100),
     "tokyo_state_150": ("Tokyo Night (default)", "1.5", "state", 1100),
+    # Plain (nothing running, row 0 selected, empty console) at 150%: the state the real
+    # release exe shows with the same config, for the Task 15 comparison.
+    "tokyo_plain_150": ("Tokyo Night (default)", "1.5", "plain", 1100),
+    "frigus_plain_150": ("Frigus Nox", "1.5", "plain", 1100),
+    "light_plain_150": ("Light", "1.5", "plain", 1100),
     "frigus_state_150": ("Frigus Nox", "1.5", "state", 1100),
     "light_state_150": ("Light", "1.5", "state", 1100),
     "tokyo_wide_100": ("Tokyo Night (default)", "1", "state", 1700),

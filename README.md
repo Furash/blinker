@@ -165,6 +165,66 @@ Auto-reload on every Claude Code response via a Stop hook in `.claude/settings.j
 }
 ```
 
+## Blinker UI (desktop app)
+
+`BlinkerUI.exe` is a Windows desktop manager for the same workflow: a list of addon
+folders, each with Launch / Kill, Reload, Restart, Clear console, AI-terminal buttons,
+Open folder, Edit and remove, plus the selected folder's Blender output. It starts
+Blender with `bootstrap.py` exactly like the CLI.
+
+The app is now built with Tauri 2 (Rust backend, plain HTML/CSS/JS frontend in
+`app/`). The previous PySide6 app (`blinker_ui.py`, `BlinkerUI.spec`, `build_exe.cmd`)
+stays in the repo until the owner removes it.
+
+### Install
+
+Download `BlinkerUI-vX.Y.Z.zip` from the GitHub releases, unzip it and run
+`BlinkerUI\BlinkerUI.exe` (the zip holds one `BlinkerUI\` folder: the exe, `icons\`,
+`logo.png`, `logo.ico`; `bootstrap.py` is embedded in the exe). The first Tauri release
+is published as a **pre-release**, so existing installs do not offer it as an update
+until it is promoted.
+
+Requirements: Windows 10/11 with the **WebView2 Evergreen runtime** (preinstalled on
+Windows 11; on Windows 10 it may need installing from Microsoft).
+
+The first start of a freshly unzipped (unsigned) exe can take several seconds while
+Windows Defender checks the new file; later starts take well under a second
+(measurements: `docs/superpowers/specs/startup-results.md`).
+
+### Config
+
+- `%APPDATA%\BlinkerUI\blinker_ui_config.json` (same schema as before). On first start
+  an existing `blinker_ui_config.json` next to the exe (the Python app's location) is
+  copied there once, so updates that replace the install folder no longer lose it.
+- Custom AI icons: `%APPDATA%\BlinkerUI\icons`, then `icons\` next to the exe, then the
+  bundled ones.
+- Development: `BLINKER_CONFIG_DIR=<dir>` uses `<dir>\blinker_ui_config.json` instead
+  (no migration), so test runs never touch the real config.
+
+### Build
+
+From `app\` (rustup picks the toolchain pinned in `app\rust-toolchain.toml`, stable MSVC;
+needs `cargo install tauri-cli --version 2.12.4 --locked`):
+
+```
+cd app
+cargo tauri build --no-bundle      # -> app\src-tauri\target\release\BlinkerUI.exe
+build.cmd v0.2.0                   # tests + build + release zip and .sha256 in app\dist
+```
+
+Tests: `cargo test` in `app\src-tauri`; UI helper checks: `app\ui\selftest.html` (see the
+dev notes). Developer hooks (`BLINKER_CONFIG_DIR`, `BLINKER_READY_LOG` startup timeline,
+`--selftest`, `--update-selftest`, the browser mock UI, reference screenshots):
+[docs/dev-notes.md](docs/dev-notes.md).
+
+### Differences from the Python UI
+
+- New: an **Open folder** button on each row (opens the addon folder in Explorer).
+- A row's port box is disabled while that folder's Blender is running.
+- The toolbar shows `Settings`, not `Settings…` (as the Qt toolbar rendered it).
+- The colour picker in Settings is the WebView2 (Chromium) colour chooser, not Qt's.
+- The font list in Settings comes from GDI (installed font families).
+
 ## Troubleshooting
 
 **"No blinker server on port 9876"** — Blender isn't running or `bootstrap.py` failed. Check Blender's console for `[blinker]` messages.
