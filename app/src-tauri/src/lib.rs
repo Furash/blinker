@@ -1,3 +1,5 @@
+mod addons;
+mod blender;
 mod config;
 mod paths;
 mod theme;
