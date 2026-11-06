@@ -2,6 +2,7 @@ mod addons;
 mod blender;
 mod commands;
 mod config;
+mod fonts;
 mod net;
 mod paths;
 mod terminal;
@@ -42,7 +43,8 @@ pub fn run() {
     }
 
     tauri::Builder::default()
-        // Native folder/file pickers (`open` only; capability `dialog:allow-open`).
+        // Native pickers: `open` (folders/files) and `save` (theme export); capability
+        // `dialog:allow-open` + `dialog:allow-save` only.
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
             let cfg = config::load(&config_path);
@@ -87,6 +89,11 @@ pub fn run() {
             commands::report_ready,
             commands::probe_now,
             commands::status_now,
+            commands::normalize_hex,
+            commands::detect_preset,
+            commands::export_theme,
+            commands::import_theme,
+            commands::list_fonts,
         ])
         .run(tauri::generate_context!())
         .expect("error while running BlinkerUI");
