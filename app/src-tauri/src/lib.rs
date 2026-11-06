@@ -3,6 +3,7 @@ mod blender;
 mod config;
 mod net;
 mod paths;
+mod terminal;
 mod theme;
 
 pub fn run() {
