@@ -84,6 +84,7 @@ pub fn run() {
             commands::is_dev,
             commands::report_ready,
             commands::probe_now,
+            commands::status_now,
         ])
         .run(tauri::generate_context!())
         .expect("error while running BlinkerUI");

@@ -124,3 +124,37 @@ export class SaveQueue {
     this.busy = false;
   }
 }
+
+/**
+ * Console feed for the selected port. While a snapshot (`get_output`) or a clear is in
+ * flight, events are buffered; `end(seq)` returns the buffered text past `seq` and makes
+ * `seq` the threshold. Live events are then shown iff their seq is past that threshold,
+ * in arrival order: an event is never dropped because ANOTHER event had a larger seq
+ * (concurrent emitters on one port can deliver out of seq order).
+ */
+export class ConsoleFeed {
+  constructor() {
+    this.threshold = 0;
+    this.buffer = null;
+  }
+
+  begin() {
+    this.buffer = [];
+  }
+
+  end(seq) {
+    const text = textAfterSnapshot(seq, this.buffer || []);
+    this.buffer = null;
+    this.threshold = seq;
+    return text;
+  }
+
+  /** Text to append now for a live event ("" when buffered or already shown). */
+  event(seq, text) {
+    if (this.buffer) {
+      this.buffer.push({ seq, text });
+      return "";
+    }
+    return seq > this.threshold ? text : "";
+  }
+}

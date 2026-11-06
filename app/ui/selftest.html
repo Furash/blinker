@@ -10,7 +10,7 @@
 <script type="module">
 // Browser-run checks for the pure helpers (no Node). Open through a local static server.
 import { metaText, baseName, sortFavouritesFirst, parseAliases, capLines, parsePort,
-  selectionAfterRemove, nextPort, textAfterSnapshot, runningFromStatus, SaveQueue } from "./logic.js";
+  selectionAfterRemove, nextPort, textAfterSnapshot, runningFromStatus, SaveQueue, ConsoleFeed } from "./logic.js";
 import { OutputPane } from "./output.js";
 
 const out = document.getElementById("out");
@@ -124,6 +124,29 @@ check("status missing port is false", [...runningFromStatus([1, 2, 3], { 1: true
   const q2 = new SaveQueue(() => Promise.reject(new Error("x")), () => 0, () => failed++);
   await q2.request();
   check("save queue: error reported, queue continues", failed, 1);
+}
+
+// ConsoleFeed: threshold per snapshot/clear, never "max seq seen"
+{
+  const feed = new ConsoleFeed();
+  feed.begin();
+  check("feed buffers during load", feed.event(5, "early"), "");
+  check("feed end returns buffered past snapshot", feed.end(3), "early");
+  // out-of-order arrival from concurrent emitters: k (seq 20) before m (seq 12)
+  const shown = [feed.event(20, "KILL"), feed.event(12, "BIG CHUNK")].join("|");
+  check("feed keeps out-of-order events (k before m)", shown, "KILL|BIG CHUNK");
+  check("feed drops events already in snapshot", feed.event(3, "dupe"), "");
+}
+{
+  // clear: stragglers from before the clear stay hidden, newer events show
+  const feed = new ConsoleFeed();
+  feed.end(10);
+  feed.begin(); // clear in flight
+  feed.event(9, "pre-clear straggler");
+  feed.event(14, "after");
+  check("clear keeps only events past the clear seq", feed.end(11), "after");
+  check("clear: later straggler dropped", feed.event(11, "old"), "");
+  check("clear: later new event shown", feed.event(15, "new"), "new");
 }
 
 const sum = document.createElement("div");

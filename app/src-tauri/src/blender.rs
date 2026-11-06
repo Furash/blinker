@@ -417,9 +417,15 @@ impl Supervisor {
         self.shared.emit(port, text);
     }
 
-    pub fn clear(&self, port: u16) {
-        if let Some(s) = lock(&self.shared.state).slots.get_mut(&port) {
-            s.history.clear();
+    /// Empty the console; returns its sequence number (pushes with a larger `seq` are
+    /// newer than the clear).
+    pub fn clear(&self, port: u16) -> u64 {
+        match lock(&self.shared.state).slots.get_mut(&port) {
+            Some(s) => {
+                s.history.clear();
+                s.history.total
+            }
+            None => 0,
         }
     }
 
@@ -1336,7 +1342,7 @@ bc".to_string(), 4));
         assert_eq!(pushes.iter().find(|x| x.0 == 9021).unwrap().1, 10);
         assert_eq!(merge(&snap, &pushes, p), e.sup.output(p));
         // clear empties the text but never moves the counter back
-        e.sup.clear(p);
+        assert_eq!(e.sup.clear(p), 7);
         assert_eq!(e.sup.output_with_seq(p), (String::new(), 7));
         e.sup.append(p, "x");
         assert_eq!(e.sup.output_with_seq(p), ("x".to_string(), 8));

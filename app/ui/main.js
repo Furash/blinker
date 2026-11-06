@@ -6,7 +6,7 @@ import { renderRows, updateRow, markSelected } from "./rows.js";
 import { OutputPane } from "./output.js";
 import { message, confirm, notImplemented } from "./dialog.js";
 import {
-  parseAliases, sortFavouritesFirst, selectionAfterRemove, textAfterSnapshot, runningFromStatus, SaveQueue,
+  parseAliases, sortFavouritesFirst, selectionAfterRemove, runningFromStatus, SaveQueue, ConsoleFeed,
 } from "./logic.js";
 
 const $ = (id) => document.getElementById(id);
@@ -19,12 +19,13 @@ const state = {
   // port -> running, exactly as the backend's last `blinker://status` said (probe OR a
   // live supervised Blender). The UI never infers alive-ness itself.
   running: new Map(),
-  launching: new Set(), // ports with a `launch` call in flight (Launch disabled)
+  // port -> "pending" (launch call in flight) | "replied" (waiting for the next status).
+  // Launch stays disabled until a status built after the launch has been applied.
+  launching: new Map(),
   icons: new Map(), // lower-case alias -> data URI | null
-  // Output of the selected port: `load` buffers events while get_output is in flight;
-  // `shownSeq` is the console sequence the pane holds (events at or below it are dupes).
-  load: null, // { port, buffer: [{ seq, text }] }
-  shownSeq: 0,
+  // Console of the selected port: snapshot/clear threshold and the in-flight buffer.
+  feed: new ConsoleFeed(),
+  feedToken: null, // identifies the snapshot/clear in flight (superseded ones are ignored)
 };
 
 const errText = (e) => (e && typeof e === "object" ? e.message ?? JSON.stringify(e) : String(e));
@@ -58,10 +59,16 @@ function applyStatus(payload) {
   const next = runningFromStatus(folders().map((f) => f.port), payload);
   folders().forEach((f, i) => {
     const r = next.get(f.port);
+    let dirty = false;
+    if (state.launching.get(f.port) === "replied") {
+      state.launching.delete(f.port);
+      dirty = true;
+    }
     if (r !== !!state.running.get(f.port)) {
       state.running.set(f.port, r);
-      updateRow(listEl, state, i, handlers);
+      dirty = true;
     }
+    if (dirty) updateRow(listEl, state, i, handlers);
   });
 }
 
@@ -88,39 +95,30 @@ const selectedPort = () => {
 async function renderOutput() {
   const label = $("out-label");
   const f = state.selected === null ? null : folders()[state.selected];
+  const token = {};
+  state.feedToken = token;
   if (!f) {
     label.textContent = "(no folder selected)";
-    state.load = null;
     pane.setText("");
     return;
   }
   label.textContent = `${f.path}   ·   port ${f.port}`;
   const port = f.port;
-  const load = { port, buffer: [] };
-  state.load = load;
+  state.feed.begin();
   let snap = { text: "", seq: 0 };
   try {
     snap = await invoke("get_output", { port });
   } catch {
     /* empty console */
   }
-  if (state.load !== load || selectedPort() !== port) return; // superseded
-  state.load = null;
+  if (state.feedToken !== token || selectedPort() !== port) return; // superseded
   pane.setText(snap.text);
-  // events that raced the snapshot: keep only those past it
-  pane.append(textAfterSnapshot(snap.seq, load.buffer));
-  state.shownSeq = Math.max(snap.seq, ...load.buffer.map((e) => e.seq));
+  pane.append(state.feed.end(snap.seq)); // events that raced the snapshot, past it only
 }
 
 function appendOutput(port, text, seq) {
   if (selectedPort() !== port) return;
-  if (state.load && state.load.port === port) {
-    state.load.buffer.push({ seq, text });
-    return;
-  }
-  if (seq <= state.shownSeq) return;
-  state.shownSeq = seq;
-  pane.append(text);
+  pane.append(state.feed.event(seq, text));
 }
 
 // ---------- folder actions ----------
@@ -133,14 +131,21 @@ async function launch(idx, blender = null) {
     const i = folders().indexOf(f);
     if (i >= 0) updateRow(listEl, state, i, handlers);
   };
-  state.launching.add(port);
+  state.launching.set(port, "pending");
   redraw();
   let retry = null;
   try {
     const persisted = await invoke("launch", { folder: f, blender });
-    // The backend saved a user-picked Blender path: keep the local copy in step, or
-    // the next save_config would overwrite it. (Running state arrives as a status event.)
-    if (persisted) state.config.blender_path = persisted;
+    // The backend saved a user-picked Blender path: keep the local copy in step and
+    // queue a save, so neither a later nor an older in-flight save loses it.
+    if (persisted) {
+      state.config.blender_path = persisted;
+      save();
+    }
+    // Running state comes from status events. Keep Launch disabled until a status built
+    // after this launch is applied: ask for one now (no probe).
+    state.launching.set(port, "replied");
+    invoke("status_now").catch(() => {});
   } catch (e) {
     state.launching.delete(port);
     redraw();
@@ -150,8 +155,6 @@ async function launch(idx, blender = null) {
     } else {
       await message("Launch", errText(e));
     }
-  } finally {
-    if (state.launching.delete(port)) redraw();
   }
   if (retry && folders().includes(f)) await launch(folders().indexOf(f), retry);
 }
@@ -170,8 +173,29 @@ async function tcpAction(cmd, idx) {
 async function clearConsole(idx) {
   const f = folders()[idx];
   if (!f) return;
-  await invoke("clear_output", { port: f.port }).catch(() => {});
-  if (idx === state.selected) pane.clear();
+  const port = f.port;
+  const shown = selectedPort() === port;
+  const token = {};
+  if (shown) {
+    // Like a snapshot of an empty console: events in flight are buffered and only
+    // those newer than the clear are shown.
+    state.feedToken = token;
+    state.feed.begin();
+    pane.clear();
+  }
+  let seq = null;
+  try {
+    seq = await invoke("clear_output", { port });
+  } catch {
+    seq = null;
+  }
+  if (!shown || state.feedToken !== token || selectedPort() !== port) return;
+  if (seq === null) {
+    renderOutput(); // clear failed: show what the backend has
+    return;
+  }
+  pane.clear();
+  pane.append(state.feed.end(seq));
 }
 
 async function openFolder(idx) {

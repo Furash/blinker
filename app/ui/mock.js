@@ -109,7 +109,8 @@ const commands = {
     return l;
   },
   terminate_process: ({ port }) => alive.delete(port),
-  clear_output: ({ port }) => { output.delete(port); },
+  clear_output: ({ port }) => { output.delete(port); return seqs.get(port) || 0; },
+  status_now: () => { setTimeout(publishStatus, 0); },
   get_output: ({ port }) => ({ text: output.get(port) || "", seq: seqs.get(port) || 0 }),
   open_ai: () => {},
   open_folder: () => {},

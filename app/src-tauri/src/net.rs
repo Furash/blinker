@@ -67,15 +67,16 @@ pub fn probe(ports: &[u16]) -> BTreeMap<u16, bool> {
 
 /// Probe loop: once immediately, then every `interval`. A tick is skipped
 /// while the previous probe is still running. Empty port list emits nothing.
-fn poller_loop<P, E>(
+fn poller_loop<P, E, R>(
     ports: Arc<Mutex<Vec<u16>>>,
     stop: Arc<AtomicBool>,
     interval: Duration,
     probe: P,
     emit: E,
 ) where
-    P: Fn(&[u16]) -> BTreeMap<u16, bool> + Send + Sync + 'static,
-    E: Fn(BTreeMap<u16, bool>) + Send + Sync + 'static,
+    P: Fn(&[u16]) -> R + Send + Sync + 'static,
+    E: Fn(R) + Send + Sync + 'static,
+    R: Send + 'static,
 {
     let probe = Arc::new(probe);
     let emit = Arc::new(emit);
@@ -110,9 +111,15 @@ fn poller_loop<P, E>(
 pub fn start_poller(app: AppHandle, ports: Arc<Mutex<Vec<u16>>>) {
     let stop = Arc::new(AtomicBool::new(false));
     std::thread::spawn(move || {
-        poller_loop(ports, stop, POLL_INTERVAL, probe, move |m| {
-            crate::commands::publish_status(&app, Some(m));
-        });
+        let app2 = app.clone();
+        poller_loop(
+            ports,
+            stop,
+            POLL_INTERVAL,
+            // The ticket is taken before probing so a launch/exit meanwhile wins.
+            move |p: &[u16]| (crate::commands::probe_begin(&app2, p), probe(p)),
+            move |(ticket, m)| crate::commands::probe_finish(&app, ticket, m),
+        );
     });
 }
 
@@ -224,7 +231,7 @@ mod tests {
                         thread::sleep(Duration::from_millis(400)); // much slower than interval
                         ps.iter().map(|p| (*p, true)).collect()
                     },
-                    move |m| {
+                    move |m: BTreeMap<u16, bool>| {
                         assert_eq!(m.len(), 2);
                         e2.fetch_add(1, Ordering::SeqCst);
                     },
@@ -250,7 +257,7 @@ mod tests {
         let h = {
             let (ports, stop) = (ports.clone(), stop.clone());
             thread::spawn(move || {
-                poller_loop(ports, stop, Duration::from_millis(20), |_| BTreeMap::new(), move |_| {
+                poller_loop(ports, stop, Duration::from_millis(20), |_| BTreeMap::<u16, bool>::new(), move |_| {
                     e2.fetch_add(1, Ordering::SeqCst);
                 })
             })

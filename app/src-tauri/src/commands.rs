@@ -20,9 +20,9 @@ pub struct AppState {
     pub config: Mutex<Config>,
     pub supervisor: Arc<Supervisor>,
     pub ports: Arc<Mutex<Vec<u16>>>,
-    /// Last TCP probe result per port (poller and `probe_now`). Its lock also
+    /// Last applicable TCP probe per port (poller and `probe_now`). Its lock also
     /// serialises `publish_status`, so status events leave in the order they were built.
-    pub last_probe: Mutex<BTreeMap<u16, bool>>,
+    pub last_probe: Mutex<ProbeState>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -40,8 +40,9 @@ impl OutputSink for TauriSink {
     }
     fn exited(&self, port: u16, code: Option<i32>) {
         let _ = self.app.emit("blinker://exited", serde_json::json!({ "port": port, "code": code }));
-        // The supervisor already marked the port not alive: publish the new state.
-        publish_status(&self.app, None);
+        // Python `_on_proc_finished`: running = False now, until a later poll says otherwise.
+        // The supervisor already marked the port not alive.
+        publish_status_with(&self.app, |ps| ps.exited(port));
     }
 }
 
@@ -64,16 +65,82 @@ pub fn status_payload(
         .collect()
 }
 
-/// Merge `probed` into the last probe and emit the full status for the current ports.
-pub fn publish_status(app: &AppHandle, probed: Option<BTreeMap<u16, bool>>) {
-    let Some(st) = app.try_state::<AppState>() else { return };
-    let mut last = lock(&st.last_probe);
-    if let Some(m) = probed {
-        last.extend(m);
+/// Probe results with per-port epochs, so a probe can never report a state older than
+/// a launch or exit that happened while it ran, and overlapping probes cannot store an
+/// older result over a newer one.
+#[derive(Debug, Default)]
+pub struct ProbeState {
+    probe: BTreeMap<u16, bool>,
+    /// Bumped on every launch and exit of a supervised Blender on the port.
+    epoch: BTreeMap<u16, u64>,
+    /// Start number of the probe whose result is stored for the port.
+    applied: BTreeMap<u16, u64>,
+    started: u64,
+}
+
+/// Taken when a probe starts; `ProbeState::apply` uses it to drop stale results.
+#[derive(Debug, Clone)]
+pub struct ProbeTicket {
+    seq: u64,
+    epochs: BTreeMap<u16, u64>,
+}
+
+impl ProbeState {
+    pub fn begin(&mut self, ports: &[u16]) -> ProbeTicket {
+        self.started += 1;
+        let epochs = ports.iter().map(|&p| (p, self.epoch.get(&p).copied().unwrap_or(0))).collect();
+        ProbeTicket { seq: self.started, epochs }
     }
+
+    /// Store results whose port saw no launch/exit since `t` began and no newer probe.
+    pub fn apply(&mut self, t: &ProbeTicket, results: &BTreeMap<u16, bool>) {
+        for (&p, &v) in results {
+            let same_epoch = t.epochs.get(&p) == Some(&self.epoch.get(&p).copied().unwrap_or(0));
+            let newer = self.applied.get(&p).map_or(true, |&a| t.seq > a);
+            if same_epoch && newer {
+                self.probe.insert(p, v);
+                self.applied.insert(p, t.seq);
+            }
+        }
+    }
+
+    /// A supervised Blender exited: not running until a probe begun later says so.
+    pub fn exited(&mut self, port: u16) {
+        *self.epoch.entry(port).or_insert(0) += 1;
+        self.probe.insert(port, false);
+    }
+
+    /// A supervised Blender started (alive covers it); earlier probes are stale.
+    pub fn launched(&mut self, port: u16) {
+        *self.epoch.entry(port).or_insert(0) += 1;
+    }
+
+    #[cfg(test)]
+    pub fn get(&self, port: u16) -> bool {
+        self.probe.get(&port).copied().unwrap_or(false)
+    }
+}
+
+/// Update the probe state under its lock, then emit the full status (still under it).
+pub fn publish_status_with(app: &AppHandle, update: impl FnOnce(&mut ProbeState)) {
+    let Some(st) = app.try_state::<AppState>() else { return };
+    let mut ps = lock(&st.last_probe);
+    update(&mut ps);
     let ports = lock(&st.ports).clone();
-    let payload = status_payload(&ports, &last, |p| st.supervisor.is_alive(p));
+    let payload = status_payload(&ports, &ps.probe, |p| st.supervisor.is_alive(p));
     let _ = app.emit("blinker://status", payload);
+}
+
+/// Start a probe (see `ProbeState::begin`).
+pub fn probe_begin(app: &AppHandle, ports: &[u16]) -> Option<ProbeTicket> {
+    app.try_state::<AppState>().map(|st| lock(&st.last_probe).begin(ports))
+}
+
+/// Apply a finished probe and publish.
+pub fn probe_finish(app: &AppHandle, t: Option<ProbeTicket>, results: BTreeMap<u16, bool>) {
+    if let Some(t) = t {
+        publish_status_with(app, |ps| ps.apply(&t, &results));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -223,13 +290,22 @@ pub async fn get_state(state: State<'_, AppState>) -> Result<AppStateDto, String
     Ok(build_state(&cfg, &state.config_path, &BTreeMap::new()))
 }
 
-/// Probe the given ports now and emit the full status (`publish_status`).
+/// Emit the current status without probing (the UI asks after a `launch` reply, so it
+/// sees a status built after the launch finished).
+#[tauri::command]
+pub async fn status_now(app: AppHandle) -> Result<(), String> {
+    publish_status_with(&app, |_| {});
+    Ok(())
+}
+
+/// Probe the given ports now and emit the full status (`publish_status_with`).
 #[tauri::command]
 pub async fn probe_now(app: AppHandle, ports: Vec<u16>) -> Result<(), String> {
+    let ticket = probe_begin(&app, &ports);
     let running = tauri::async_runtime::spawn_blocking(move || net::probe(&ports))
         .await
         .map_err(|e| e.to_string())?;
-    publish_status(&app, Some(running));
+    probe_finish(&app, ticket, running);
     Ok(())
 }
 
@@ -319,7 +395,7 @@ pub async fn launch(
         .map_err(|e| launch_err("spawn_failed", e.to_string()))?
         .map_err(|m| launch_err("spawn_failed", m))?;
     // Kill/Reload/Restart flip on now, as Python sets running right after start().
-    publish_status(&app, None);
+    publish_status_with(&app, |ps| ps.launched(port));
 
     // `_prompt_blender_path` persists a picked executable once it is accepted.
     if blender.as_deref() == Some(exe.as_str()) {
@@ -381,9 +457,9 @@ pub async fn terminate_process(state: State<'_, AppState>, port: u16) -> Result<
 }
 
 #[tauri::command]
-pub async fn clear_output(state: State<'_, AppState>, port: u16) -> Result<(), String> {
-    state.supervisor.clear(port);
-    Ok(())
+/// Returns the console sequence at the clear; output events at or below it are older.
+pub async fn clear_output(state: State<'_, AppState>, port: u16) -> Result<u64, String> {
+    Ok(state.supervisor.clear(port))
 }
 
 #[derive(Debug, Serialize)]
@@ -517,6 +593,40 @@ mod tests {
         assert_eq!(s.config.folders[0].path, "b");
         assert_eq!(s.config.theme.get(key), Some(&Value::String("#000000".into())));
         assert_eq!(s.config.theme.len(), s.default_theme.len());
+    }
+
+    #[test]
+    fn probe_begun_before_exit_cannot_resurrect_running() {
+        let mut ps = ProbeState::default();
+        let t0 = ps.begin(&[1]);
+        ps.apply(&t0, &BTreeMap::from([(1, true)]));
+        assert!(ps.get(1));
+        let before = ps.begin(&[1]); // started while Blender still answered
+        ps.exited(1);
+        assert!(!ps.get(1), "exit clears running at once");
+        ps.apply(&before, &BTreeMap::from([(1, true)]));
+        assert!(!ps.get(1), "stale probe ignored");
+        let after = ps.begin(&[1]); // e.g. an external Blender answers later
+        ps.apply(&after, &BTreeMap::from([(1, true)]));
+        assert!(ps.get(1), "probe begun after the exit applies");
+    }
+
+    #[test]
+    fn overlapping_probes_keep_the_newer_result_and_launch_bumps_epoch() {
+        let mut ps = ProbeState::default();
+        let older = ps.begin(&[1, 2]);
+        let newer = ps.begin(&[1, 2]);
+        ps.apply(&newer, &BTreeMap::from([(1, false), (2, true)]));
+        ps.apply(&older, &BTreeMap::from([(1, true), (2, false)]));
+        assert!(!ps.get(1) && ps.get(2), "older overlapping probe must not win");
+        let pre_launch = ps.begin(&[2]);
+        ps.launched(2);
+        ps.apply(&pre_launch, &BTreeMap::from([(2, false)]));
+        assert!(ps.get(2), "probe begun before the launch is stale");
+        // ports outside the ticket are ignored
+        let t = ps.begin(&[1]);
+        ps.apply(&t, &BTreeMap::from([(3, true)]));
+        assert!(!ps.get(3));
     }
 
     #[test]
