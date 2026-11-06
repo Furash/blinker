@@ -21,10 +21,13 @@ function button(text, onClick, opts = {}) {
   return b;
 }
 
-/** QSpinBox stand-in: digits, 1024-65535, arrows/wheel/keys step by 1. */
-function portSpin(value, disabled, onCommit) {
+/**
+ * QSpinBox stand-in: digits, 1024-65535, arrows/wheel/keys step by 1. `onCommit(v)` runs
+ * on editingFinished with a changed value; `wrap.dataset.port` is the last committed value.
+ */
+export function portSpin(value, disabled, onCommit, title = "TCP port the bootstrap server listens on") {
   const wrap = el("div", "spin");
-  wrap.title = "TCP port the bootstrap server listens on";
+  if (title) wrap.title = title;
   const input = el("input");
   input.type = "text";
   input.inputMode = "numeric";

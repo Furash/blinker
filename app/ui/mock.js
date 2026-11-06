@@ -1,7 +1,12 @@
 // In-memory stand-in for the Tauri backend, used when the page is opened in a plain
 // browser (no window.__TAURI__) so the UI can be viewed and screenshotted.
 // URL options: ?theme=tokyo|frigus|light  &scene=state|plain|empty
-// The folders, output and config label match tools/grab_reference.py.
+//   &dialog=scan|edit|noaddons  open that dialog after startup (screenshots)
+//   &blender=missing            launch fails with blender_not_found until a path is picked
+// The folders, output, config label and scan results match tools/grab_reference.py.
+// Native pickers: `window.__blinkerMockPicks` = [value|null, ...] answers the next
+// picks in order (null = cancelled); otherwise canned paths. Every pick request is
+// recorded in `window.__blinkerPicks`.
 
 const TOKYO = {
   ui_font_family: "Segoe UI", ui_font_size: 10, mono_font_family: "Cascadia Mono", mono_font_size: 10,
@@ -53,12 +58,36 @@ const folders = scene === "empty" ? [] : [
 const config = {
   folders, terminal: 'wt -d "{path}" {cmd}', ai_aliases: "claude, codex", blender_path: "", theme: { ...theme },
 };
+// tools/grab_reference.py SCAN_ROOT / SCAN_FOUND
+const SCAN_ROOT = String.raw`D:\git\blender_addons`;
+const SCAN_FOUND = [
+  { path: String.raw`D:\git\blender_addons\asset_tools`, kind: "extension" },
+  { path: String.raw`D:\git\blender_addons\ccp_exporter`, kind: "extension" },
+  { path: String.raw`D:\git\blender_addons\legacy\mesh_cleanup`, kind: "legacy" },
+  { path: String.raw`D:\git\blender_addons\quick_tools_v2`, kind: "extension" },
+  { path: String.raw`D:\git\blender_addons\uv_helpers`, kind: "legacy" },
+];
+// a folder that is itself an addon
+const SINGLE_ADDON = String.raw`D:\git\single_addon`;
+const norm = (p) => String(p).replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
+
 const output = new Map(scene === "state" ? [[9877, SAMPLE_OUTPUT]] : []);
 const alive = new Set(scene === "state" ? [9876] : []);
 const listeners = new Map();
 
 /** UI scenario hints used only in mock mode (initial selection for screenshots). */
-export const scenario = { selected: scene === "state" ? 1 : null };
+export const scenario = { selected: scene === "state" ? 1 : null, dialog: params.get("dialog") };
+
+window.__blinkerPicks = [];
+/** Native picker stand-in (api.js pickFolder / pickFile). */
+export async function pick(kind, opts) {
+  window.__blinkerPicks.push({ kind, ...opts });
+  const queue = window.__blinkerMockPicks;
+  if (Array.isArray(queue) && queue.length) return queue.shift();
+  if (kind === "folder") return SCAN_ROOT;
+  if ((opts.filters || []).some((f) => f.extensions.includes("blend"))) return String.raw`D:\scenes\other.blend`;
+  return String.raw`C:\Program Files\Blender Foundation\Blender 4.5\blender.exe`;
+}
 
 function emit(event, payload) {
   for (const cb of listeners.get(event) || []) cb({ event, payload });
@@ -90,14 +119,24 @@ const commands = {
     color_keys: [],
   }),
   save_config: ({ config: c }) => { Object.assign(config, clone(c)); },
-  launch: ({ folder }) => {
-    if (!folder.path.startsWith("D:/")) {
+  launch: ({ folder, blender }) => {
+    if (!/^D:[\\/]/.test(folder.path)) {
       throw { kind: "path_not_found", message: `Path not found:\n${folder.path}` };
+    }
+    if (alive.has(folder.port)) {
+      throw { kind: "spawn_failed", message: `Port ${folder.port} is already used by a running Blender.` };
+    }
+    let persisted = null;
+    if (params.get("blender") === "missing" && !config.blender_path) {
+      if (!blender) {
+        throw { kind: "blender_not_found", message: "Could not locate Blender automatically.\n\nPick the Blender executable now?" };
+      }
+      config.blender_path = persisted = blender;
     }
     alive.add(folder.port);
     push(folder.port, `$ blender.exe --python bootstrap.py\n  port:   ${folder.port}\n\n`);
     publishStatus();
-    return null;
+    return persisted;
   },
   reload: ({ port }) => { const l = "[reload] ok\n"; push(port, l); return l; },
   restart: ({ port }) => { const l = "[restart] ok\n"; push(port, l); return l; },
@@ -117,8 +156,10 @@ const commands = {
   set_ports: () => {},
   alias_icon: ({ alias }) => (["claude", "codex"].includes(alias.toLowerCase())
     ? `/icons/${alias.toLowerCase()}.svg` : null),
-  scan_addons: () => [],
-  addon_kind_of: () => null,
+  // &dialog=noaddons: the scan root holds nothing (the "No addons" box)
+  scan_addons: ({ root }) => (norm(root) === norm(SCAN_ROOT) && scenario.dialog !== "noaddons" ? SCAN_FOUND : []),
+  addon_kind_of: ({ path }) => (norm(path) === norm(SINGLE_ADDON) ? "legacy"
+    : SCAN_FOUND.find((a) => norm(a.path) === norm(path))?.kind ?? null),
   find_blender: () => null,
   is_dev: () => true,
   report_ready: () => {},
@@ -138,3 +179,7 @@ export async function listen(event, cb) {
 }
 
 setInterval(publishStatus, 2000);
+
+// Screenshot tooling: with &dialog=..., dialogs open at the top-left corner, so the
+// client area is at (1, 31) (frame border, title bar).
+if (scenario.dialog) document.documentElement.classList.add("dlgshot");

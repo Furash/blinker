@@ -22,12 +22,23 @@ export async function showWindow() {
 }
 
 /**
- * Native "pick a file" dialog.
- * TODO(Task 10): wire to tauri-plugin-dialog (not installed yet); returns null for now,
- * so the "Pick the Blender executable now?" flow ends without launching.
+ * Native folder picker (QFileDialog.getExistingDirectory). Resolves to the picked path
+ * or null when cancelled. The mock answers from `window.__blinkerMockPicks` (see mock.js).
  */
-export async function pickFile(_options) {
-  return null;
+export async function pickFolder(title, defaultPath = "") {
+  if (mock) return mock.pick("folder", { title, defaultPath });
+  const r = await T.dialog.open({ directory: true, multiple: false, title, defaultPath: defaultPath || undefined });
+  return typeof r === "string" && r ? r : null;
+}
+
+/**
+ * Native open-file picker (QFileDialog.getOpenFileName). `filters` =
+ * [{ name, extensions: ["blend"] }, ...]; "*" matches every file.
+ */
+export async function pickFile(title, filters = [], defaultPath = "") {
+  if (mock) return mock.pick("file", { title, filters, defaultPath });
+  const r = await T.dialog.open({ directory: false, multiple: false, title, filters, defaultPath: defaultPath || undefined });
+  return typeof r === "string" && r ? r : null;
 }
 
 /** True in debug builds (devtools and reload keys stay available). */

@@ -1,12 +1,15 @@
 // Main window controller (MainWindow, blinker_ui.py:1033-1673).
 
-import { invoke, listen, showWindow, pickFile, isDev, isMock, mockScenario } from "./api.js";
+import { invoke, listen, showWindow, pickFile, pickFolder, isDev, isMock, mockScenario } from "./api.js";
 import { applyTheme, mergeTheme } from "./theme.js";
 import { renderRows, updateRow, markSelected } from "./rows.js";
 import { OutputPane } from "./output.js";
 import { message, confirm, notImplemented } from "./dialog.js";
+import { scanDialog } from "./scan.js";
+import { editDialog } from "./edit.js";
 import {
   parseAliases, sortFavouritesFirst, selectionAfterRemove, runningFromStatus, SaveQueue, ConsoleFeed,
+  appendFolders,
 } from "./logic.js";
 
 const $ = (id) => document.getElementById(id);
@@ -38,7 +41,7 @@ const folders = () => state.config.folders;
 const saves = new SaveQueue(
   (config) => invoke("save_config", { config }),
   () => JSON.parse(JSON.stringify(state.config)),
-  (e) => message("Save", errText(e)),
+  (e) => message("Save", errText(e), "critical"),
 );
 const save = () => saves.request();
 
@@ -57,19 +60,28 @@ async function pollNow() {
 /** `_apply_statuses` for a full status payload: update rows whose state changed. */
 function applyStatus(payload) {
   const next = runningFromStatus(folders().map((f) => f.port), payload);
+  // Ports whose state changed; every row on such a port is redrawn (two folders can
+  // share a port: Python lets the Edit dialog and the port box set any port).
+  const dirty = new Set();
+  for (const [port, r] of next) {
+    if (state.launching.get(port) === "replied") {
+      state.launching.delete(port);
+      dirty.add(port);
+    }
+    if (r !== !!state.running.get(port)) {
+      state.running.set(port, r);
+      dirty.add(port);
+    }
+  }
   folders().forEach((f, i) => {
-    const r = next.get(f.port);
-    let dirty = false;
-    if (state.launching.get(f.port) === "replied") {
-      state.launching.delete(f.port);
-      dirty = true;
-    }
-    if (r !== !!state.running.get(f.port)) {
-      state.running.set(f.port, r);
-      dirty = true;
-    }
-    if (dirty) updateRow(listEl, state, i, handlers);
+    if (dirty.has(f.port)) updateRow(listEl, state, i, handlers);
   });
+}
+
+/** After a folder moved to `port`: unknown until the next poll, unless another folder
+ *  already shows that port's state. */
+function portMoved(f) {
+  if (!folders().some((o) => o !== f && o.port === f.port)) state.running.set(f.port, false);
 }
 
 // ---------- rendering ----------
@@ -151,12 +163,23 @@ async function launch(idx, blender = null) {
     redraw();
     if (e && e.kind === "blender_not_found") {
       if (!(await confirm("Blender not found", e.message))) return;
-      retry = await pickFile({ title: "Locate Blender executable", defaultPath: state.config.blender_path });
+      retry = await pickBlender();
     } else {
-      await message("Launch", errText(e));
+      await message("Launch", errText(e), "critical");
     }
   }
   if (retry && folders().includes(f)) await launch(folders().indexOf(f), retry);
+}
+
+/** `_prompt_blender_path`: the picked file, or null. */
+function pickBlender() {
+  // Python's Windows filter is "Blender (blender.exe)"; the native dialog filters by
+  // extension only, so it lists every .exe.
+  return pickFile(
+    "Locate Blender executable",
+    [{ name: "Blender (*.exe)", extensions: ["exe"] }, { name: "All files", extensions: ["*"] }],
+    state.config.blender_path || "",
+  );
 }
 
 async function tcpAction(cmd, idx) {
@@ -166,7 +189,7 @@ async function tcpAction(cmd, idx) {
     // The backend appends the "[cmd] response" line to the console and emits it.
     await invoke(cmd, { port: f.port });
   } catch (e) {
-    await message(cmd[0].toUpperCase() + cmd.slice(1), errText(e));
+    await message(cmd[0].toUpperCase() + cmd.slice(1), errText(e), "critical");
   }
 }
 
@@ -204,7 +227,7 @@ async function openFolder(idx) {
   try {
     await invoke("open_folder", { path: f.path });
   } catch (e) {
-    await message("Open folder", errText(e));
+    await message("Open folder", errText(e), "critical");
   }
 }
 
@@ -214,7 +237,7 @@ async function openAi(idx, ai) {
   try {
     await invoke("open_ai", { path: f.path, ai });
   } catch (e) {
-    await message("Open AI", errText(e));
+    await message("Open AI", errText(e), "warning");
   }
 }
 
@@ -223,11 +246,57 @@ function changePort(idx, port) {
   const f = folders()[idx];
   if (!f || f.port === port) return;
   f.port = port;
-  state.running.set(port, false);
+  portMoved(f);
   save();
   updateRow(listEl, state, idx, handlers);
   if (idx === state.selected) renderOutput();
   pollNow();
+}
+
+/** `_add_folder`: pick a folder; add it if it is an addon, else scan it. */
+async function addFolder() {
+  const root = await pickFolder("Select addon folder or parent folder to scan");
+  if (!root) return;
+  let toAdd;
+  try {
+    const kind = await invoke("addon_kind_of", { path: root });
+    if (kind) {
+      toAdd = [root];
+    } else {
+      const found = await invoke("scan_addons", { root });
+      if (!found.length) {
+        await message("No addons", `No Blender addons or extensions found under:\n${root}`, "information");
+        return;
+      }
+      const picked = await scanDialog(root, found, folders());
+      if (!picked) return;
+      toAdd = picked.map((a) => a.path);
+    }
+  } catch (e) {
+    await message("Add Folder", errText(e), "critical");
+    return;
+  }
+  const sel = appendFolders(folders(), toAdd);
+  if (sel === null) return;
+  state.selected = sel;
+  save();
+  syncPorts();
+  refreshRows();
+}
+
+/** `_edit_folder`: OK writes the fields back, then save and re-render. */
+async function editFolder(idx) {
+  const f = folders()[idx];
+  if (!f) return;
+  const res = await editDialog(f, { portLocked: !!state.running.get(f.port) });
+  if (!res || !folders().includes(f)) return;
+  const portChanged = res.port !== f.port;
+  Object.assign(f, res);
+  if (portChanged) portMoved(f);
+  save();
+  syncPorts();
+  refreshRows();
+  if (portChanged) pollNow();
 }
 
 /** `_toggle_fav`. */
@@ -267,7 +336,7 @@ const handlers = {
   restart: (i) => tcpAction("restart", i),
   clear: clearConsole,
   openFolder,
-  edit: () => notImplemented("Edit folder"), // TODO(Task 10): EditFolderDialog
+  edit: editFolder,
   remove: removeFolder,
   fav: toggleFav,
   port: changePort,
@@ -376,12 +445,12 @@ async function main() {
     // after a launch and after every exit, so `blinker://exited` needs no handling here
     // (its console line is appended by the backend).
     listen("blinker://status", ({ payload }) => applyStatus(payload)),
-    listen("blinker://terminal-error", ({ payload }) => message("Terminal failed", payload.message)),
+    listen("blinker://terminal-error", ({ payload }) => message("Terminal failed", payload.message, "critical")),
   ]);
   // First status poll, now that the status listener is registered (get_state does not probe).
   invoke("probe_now", { ports: folders().map((f) => f.port) }).catch(() => {});
 
-  $("act-add").addEventListener("click", () => notImplemented("Add Folder")); // TODO(Task 10)
+  $("act-add").addEventListener("click", addFolder);
   $("act-settings").addEventListener("click", () => notImplemented("Settings")); // TODO(Task 11)
   $("act-update").addEventListener("click", () => notImplemented("Updates")); // TODO(Task 12)
 
@@ -395,12 +464,16 @@ async function main() {
   // Mock mode: headless screenshot browsers resize the viewport after load; keep the
   // initial proportion so captures match the Qt reference.
   shown = !isMock;
+  // Mock screenshots: open a dialog (canned picks, see mock.js).
+  const d = mockScenario && mockScenario.dialog;
+  if (d === "scan" || d === "noaddons") addFolder();
+  else if (d === "edit") editFolder(1);
 }
 
 main().catch(async (e) => {
   console.error(e);
   await showWindow().catch(() => {});
-  message("Blinker UI", `Startup failed:\n${errText(e)}`);
+  message("Blinker UI", `Startup failed:\n${errText(e)}`, "critical");
 });
 
 // exposed for later tasks (Settings live preview, dialogs)

@@ -68,6 +68,94 @@ export function nextPort(folders) {
 }
 
 /**
+ * Path key for "already added" checks: `str(Path(p).resolve())` compared on Windows,
+ * where resolve() also yields the on-disk case. Separators unified, `.`/`..` resolved,
+ * trailing separator dropped, case folded. (Symlinks/junctions are not resolved.)
+ */
+export function pathKey(p) {
+  let s = String(p).trim().replace(/\//g, "\\");
+  const unc = s.startsWith("\\\\");
+  s = s.replace(/\\+/g, "\\");
+  const parts = [];
+  for (const part of s.split("\\")) {
+    if (part === "" || part === ".") continue;
+    if (part === "..") {
+      if (parts.length > 1 || (parts.length === 1 && !/^[a-z]:$/i.test(parts[0]))) parts.pop();
+      continue;
+    }
+    parts.push(part);
+  }
+  let out = parts.join("\\");
+  if (/^[a-z]:$/i.test(out)) out += "\\";
+  return ((unc ? "\\\\" : s.startsWith("\\") ? "\\" : "") + out).toLowerCase();
+}
+
+/** ScanAddonsDialog item text: `f"[{kind:<9}]  {path}"` (+ "    (already added)"). */
+export function addonLabel(kind, path, already) {
+  const text = `[${String(kind).padEnd(9)}]  ${path}`;
+  return already ? `${text}    (already added)` : text;
+}
+
+/**
+ * ScanAddonsDialog items for `found` ([{path, kind}] from scan_addons): already added
+ * ones are disabled and unchecked, the others checked.
+ */
+export function scanItems(found, existingFolders) {
+  const existing = new Set(existingFolders.map((f) => pathKey(f.path)));
+  return found.map(({ path, kind }) => {
+    const already = existing.has(pathKey(path));
+    return { path, kind, already, enabled: !already, checked: !already, label: addonLabel(kind, path, already) };
+  });
+}
+
+/** `ScanAddonsDialog._ok`: the checked items, in list order. */
+export function checkedAddons(items) {
+  return items.filter((i) => i.checked).map(({ path, kind }) => ({ path, kind }));
+}
+
+/** `_set_all`: check or uncheck every enabled item. */
+export function setAllChecked(items, checked) {
+  for (const i of items) if (i.enabled) i.checked = checked;
+}
+
+/** `Folder({"path": path, "port": port})` with the Folder defaults. */
+export function newFolder(path, port) {
+  return { path: String(path), port, repo: "blinker", module: "", blend: "", favourite: false };
+}
+
+/**
+ * `_add_folder` tail: append one folder per path, each on `_next_port()` at the time
+ * it is added. Mutates `folders`; returns the new selected index (the last added),
+ * or null when nothing was added.
+ */
+export function appendFolders(folders, paths) {
+  if (!paths.length) return null;
+  for (const p of paths) folders.push(newFolder(p, nextPort(folders)));
+  return folders.length - 1;
+}
+
+/** EditFolderDialog.accept: the folder fields from the dialog's field texts. */
+export function editResult({ path, port, repo, module, blend }) {
+  return {
+    path: String(path).trim(),
+    port,
+    repo: String(repo).trim() || "blinker",
+    module: String(module).trim(),
+    blend: String(blend).trim(),
+  };
+}
+
+/** QSpinBox.value() at accept: the typed text if it is a valid port, else the last value. */
+export function spinValue(text, last) {
+  return parsePort(text) ?? last;
+}
+
+/** EditFolderDialog._browse_blend start directory: blend, else path, else "". */
+export function blendStart(blend, path) {
+  return blend || path || "";
+}
+
+/**
  * Output events that arrived while `get_output` was in flight, reduced to the text
  * that is not in the snapshot: events whose `seq` is past the snapshot's, in seq order.
  * (The backend stamps each event with the console sequence after that text.)

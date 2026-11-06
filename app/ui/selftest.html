@@ -10,7 +10,8 @@
 <script type="module">
 // Browser-run checks for the pure helpers (no Node). Open through a local static server.
 import { metaText, baseName, sortFavouritesFirst, parseAliases, capLines, parsePort,
-  selectionAfterRemove, nextPort, textAfterSnapshot, runningFromStatus, SaveQueue, ConsoleFeed } from "./logic.js";
+  selectionAfterRemove, nextPort, textAfterSnapshot, runningFromStatus, SaveQueue, ConsoleFeed,
+  pathKey, addonLabel, scanItems, checkedAddons, setAllChecked, appendFolders, editResult, spinValue, blendStart } from "./logic.js";
 import { OutputPane } from "./output.js";
 
 const out = document.getElementById("out");
@@ -148,6 +149,47 @@ check("status missing port is false", [...runningFromStatus([1, 2, 3], { 1: true
   check("clear: later straggler dropped", feed.event(11, "old"), "");
   check("clear: later new event shown", feed.event(15, "new"), "new");
 }
+
+// Task 10: add / scan / edit (pure parts)
+check("next port skips used and fills gaps", nextPort([{ port: 9876 }, { port: 9877 }, { port: 9879 }]), 9878);
+check("next port empty", nextPort([]), 9876);
+{
+  const fl = [{ path: "D:/a", port: 9876 }];
+  const sel = appendFolders(fl, ["D:\\b", "D:\\c"]);
+  check("append: ports from _next_port in turn", fl.map((f) => f.port), [9876, 9877, 9878]);
+  check("append: selects last added", sel, 2);
+  check("append: Folder defaults", fl[1], { path: "D:\\b", port: 9877, repo: "blinker", module: "", blend: "", favourite: false });
+  check("append nothing", appendFolders(fl, []), null);
+}
+check("pathKey separators/case/trailing", pathKey("D:/Git/Addons/"), pathKey("d:\\git\\addons"));
+check("pathKey dots", pathKey("D:\\git\\x\\..\\addons\\.\\a"), "d:\\git\\addons\\a");
+check("pathKey drive root", pathKey("D:/"), "d:\\");
+check("pathKey .. stops at drive", pathKey("D:\\..\\a"), "d:\\a");
+check("pathKey UNC", pathKey("//srv/share/x"), "\\\\srv\\share\\x");
+check("addon label extension", addonLabel("extension", "D:\\a"), "[extension]  D:\\a");
+check("addon label legacy padded", addonLabel("legacy", "D:\\a"), "[legacy   ]  D:\\a");
+check("addon label already", addonLabel("legacy", "D:\\a", true), "[legacy   ]  D:\\a    (already added)");
+{
+  const found = [{ path: "D:\\x\\one", kind: "extension" }, { path: "D:\\x\\two", kind: "legacy" }, { path: "D:\\x\\three", kind: "extension" }];
+  const items = scanItems(found, [{ path: "d:/X/Two/" }]);
+  check("scan: already added disabled+unchecked", items.map((i) => [i.enabled, i.checked]), [[true, true], [false, false], [true, true]]);
+  check("scan: already label", items[1].label, "[legacy   ]  D:\\x\\two    (already added)");
+  setAllChecked(items, false);
+  check("scan: select none", items.map((i) => i.checked), [false, false, false]);
+  setAllChecked(items, true);
+  check("scan: select all skips disabled", items.map((i) => i.checked), [true, false, true]);
+  items[0].checked = false;
+  check("scan: result = checked, in order", checkedAddons(items), [{ path: "D:\\x\\three", kind: "extension" }]);
+  setAllChecked(items, false);
+  check("scan: none checked -> empty result", checkedAddons(items), []);
+}
+check("edit accept strips, repo default", editResult({ path: "  D:/p  ", port: 9000, repo: "  ", module: " m ", blend: " b.blend " }),
+  { path: "D:/p", port: 9000, repo: "blinker", module: "m", blend: "b.blend" });
+check("edit accept keeps repo", editResult({ path: "p", port: 1, repo: "user_default", module: "", blend: "" }).repo, "user_default");
+check("spin value typed", spinValue("12345", 9876), 12345);
+check("spin value intermediate keeps last", spinValue("12", 9876), 9876);
+check("spin value out of range keeps last", spinValue("70000", 9876), 9876);
+check("blend start: blend, path, empty", [blendStart("b", "p"), blendStart("", "p"), blendStart("", "")], ["b", "p", ""]);
 
 const sum = document.createElement("div");
 sum.className = failed ? "fail" : "pass";
