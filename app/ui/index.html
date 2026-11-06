@@ -1,15 +1,26 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <title>Blinker UI</title>
+<link rel="stylesheet" href="app.css">
+<script type="module" src="main.js"></script>
 </head>
 <body>
-blinker
-<script>
-requestAnimationFrame(() => {
-  window.__TAURI__.window.getCurrentWindow().show();
-});
-</script>
+<div id="toolbar">
+  <!-- QToolButton strips the "…" of the QAction text "Settings…" (text and tooltip). -->
+  <button type="button" class="tool" id="act-add" title="+ Add Folder">+ Add Folder</button>
+  <button type="button" class="tool" id="act-settings" title="Settings">Settings</button>
+  <button type="button" class="tool" id="act-update" title="Check for updates">Check for updates</button>
+  <span class="meta" id="config-label"></span>
+</div>
+<div id="split">
+  <div id="list-scroll"><div id="list"></div></div>
+  <div id="handle"></div>
+  <div id="out-container">
+    <div class="meta" id="out-label">(no folder selected)</div>
+    <div id="output" tabindex="0"></div>
+  </div>
+</div>
 </body>
 </html>

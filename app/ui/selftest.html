@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Blinker UI selftest</title>
+<style>body { font: 13px "Cascadia Mono", monospace; background: #16181d; color: #d4d4d4; } .fail { color: #f7768e; } .pass { color: #9ece6a; }</style>
+</head>
+<body>
+<pre id="out"></pre>
+<script type="module">
+// Browser-run checks for the pure helpers (no Node). Open through a local static server.
+import { metaText, baseName, sortFavouritesFirst, parseAliases, capLines, parsePort,
+  selectionAfterRemove, nextPort } from "./logic.js";
+import { OutputPane } from "./output.js";
+
+const out = document.getElementById("out");
+let failed = 0;
+function check(name, got, want) {
+  const ok = JSON.stringify(got) === JSON.stringify(want);
+  if (!ok) failed++;
+  const line = document.createElement("div");
+  line.className = ok ? "pass" : "fail";
+  line.textContent = `${ok ? "PASS" : "FAIL"} ${name}${ok ? "" : `: got ${JSON.stringify(got)} want ${JSON.stringify(want)}`}`;
+  out.append(line);
+}
+
+// metaText (_meta_text)
+check("meta empty", metaText({ module: "", repo: "blinker", blend: "" }), "");
+check("meta all", metaText({ module: "m", repo: "user_default", blend: "D:\\s\\a.blend" }),
+  "module=m   ·   repo=user_default   ·   blend=a.blend");
+check("meta repo blinker hidden", metaText({ module: "m", repo: "blinker", blend: "" }), "module=m");
+check("meta empty repo hidden", metaText({ module: "", repo: "", blend: "x/y.blend" }), "blend=y.blend");
+check("basename posix", baseName("D:/scenes/t.blend"), "t.blend");
+check("basename trailing sep", baseName("D:/scenes/"), "scenes");
+
+// sortFavouritesFirst (_toggle_fav / _sort_folders): stable
+const fs = [{ p: "a" }, { p: "b", favourite: true }, { p: "c" }, { p: "d", favourite: true }];
+check("fav sort stable", sortFavouritesFirst(fs).map((f) => f.p), ["b", "d", "a", "c"]);
+check("fav sort no favs", sortFavouritesFirst([{ p: "x" }, { p: "y" }]).map((f) => f.p), ["x", "y"]);
+check("fav sort does not mutate", fs.map((f) => f.p), ["a", "b", "c", "d"]);
+
+check("aliases", parseAliases(" claude, ,codex ,"), ["claude", "codex"]);
+check("aliases empty", parseAliases(""), []);
+
+// capLines (maximumBlockCount)
+check("cap under", capLines("a\nb\n", 5), "a\nb\n");
+check("cap exact blocks", capLines("a\nb\nc", 3), "a\nb\nc");
+check("cap trims front", capLines("a\nb\nc\nd", 2), "c\nd");
+check("cap trailing newline counts a block", capLines("a\nb\nc\n", 2), "c\n");
+
+check("port ok", parsePort("9876"), 9876);
+check("port low", parsePort("1023"), null);
+check("port high", parsePort("65536"), null);
+check("port junk", parsePort("98a"), null);
+check("port edges", [parsePort("1024"), parsePort("65535")], [1024, 65535]);
+
+check("sel after remove keeps", selectionAfterRemove(0, 2), 0);
+check("sel after remove clamps", selectionAfterRemove(2, 2), 1);
+check("sel after remove empty", selectionAfterRemove(0, 0), null);
+check("sel none", selectionAfterRemove(null, 3), null);
+
+check("next port", nextPort([{ port: 9876 }, { port: 9878 }]), 9877);
+
+// OutputPane line cap, incremental appends
+const host = document.createElement("div");
+document.body.append(host);
+const pane = new OutputPane(host, 3);
+pane.setText("1\n2\n3\n4\n");
+check("pane setText capped", pane.text(), "3\n4\n");
+pane.append("5\n");
+pane.flush();
+check("pane append capped", pane.text(), "4\n5\n");
+pane.append("par");
+pane.flush();
+pane.append("tial\n6");
+pane.flush();
+check("pane partial line kept whole", pane.text(), "5\npartial\n6");
+pane.append("\n7");
+pane.flush();
+check("pane trims across nodes", pane.text(), "partial\n6\n7");
+check("pane block count <= max", pane.text().split("\n").length <= 3, true);
+pane.clear();
+check("pane clear", pane.text(), "");
+
+const sum = document.createElement("div");
+sum.className = failed ? "fail" : "pass";
+sum.textContent = failed ? `${failed} FAILED` : "ALL PASS";
+out.prepend(sum);
+document.title = failed ? "FAIL" : "PASS";
+</script>
+</body>
+</html>
