@@ -184,8 +184,9 @@ pub fn expected_hash_from_text(text: &str) -> Option<String> {
 }
 
 /// SHA-256 of `file` matches the hash in `expected` (case-insensitive, first token).
-/// (The download flow hashes once itself: its mismatch message shows both values.)
-#[cfg_attr(not(test), allow(dead_code))]
+/// Test-only: the download flow hashes once itself (its mismatch message shows both
+/// values); this pins the comparison rules used there.
+#[cfg(test)]
 pub fn verify_sha256(file: &Path, expected: &str) -> bool {
     match (expected_hash_from_text(expected), sha256_hex(file)) {
         (Some(e), Ok(a)) => e == a,

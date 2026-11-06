@@ -366,6 +366,12 @@ pub async fn addon_kind_of(path: String) -> Result<Option<AddonKind>, String> {
     Ok(addons::addon_kind(Path::new(&path)))
 }
 
+/// Python's "bootstrap.py not found at:\n{path}", plus why the embedded copy could not
+/// be written there.
+fn bootstrap_error(path: &std::path::Path, e: &std::io::Error) -> String {
+    format!("bootstrap.py not found at:\n{}\n\n{e}", path.display())
+}
+
 /// Returns `Some(path)` when this call newly persisted a Blender executable to the
 /// config (the user-picked `blender` argument). The UI MUST store it in its local
 /// config copy, otherwise its next `save_config` overwrites it with the stale value.
@@ -378,7 +384,7 @@ pub async fn launch(
 ) -> Result<Option<String>, LaunchError> {
     validate_folder(&folder.path)?;
     let bootstrap = blender::write_bootstrap()
-        .map_err(|e| launch_err("spawn_failed", format!("bootstrap.py not found at:\n{e}")))?;
+        .map_err(|e| launch_err("spawn_failed", bootstrap_error(&blender::bootstrap_path(), &e)))?;
     let configured = lock(&state.config).blender_path.clone();
     let exe = resolve_blender(blender.as_deref(), &configured, || {
         blender::find_blender(std::env::var("BLENDER_PATH").ok().as_deref())
@@ -646,6 +652,13 @@ fn startup_timeline(ui: serde_json::Map<String, serde_json::Value>) -> String {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn bootstrap_error_shows_path_and_cause() {
+        let e = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "Access is denied.");
+        let m = bootstrap_error(std::path::Path::new(r"C:\T\blinker_bootstrap.py"), &e);
+        assert_eq!(m, "bootstrap.py not found at:\nC:\\T\\blinker_bootstrap.py\n\nAccess is denied.");
+    }
 
     #[test]
     fn startup_timeline_merges_ui_marks_in_time_order_relative_to_process_start() {
