@@ -69,25 +69,58 @@ fn json<T: serde::Serialize>(v: &T) -> String {
     serde_json::to_string(v).unwrap_or_default()
 }
 
+/// Same AUMID as the Python app (`_set_windows_aumid("blinker.ui")`) so existing pinned
+/// taskbar shortcuts keep grouping. Must run before any window exists.
+fn set_app_user_model_id() {
+    #[cfg(windows)]
+    {
+        let id: Vec<u16> = "blinker.ui\0".encode_utf16().collect();
+        // SAFETY: `id` is a valid NUL-terminated UTF-16 string for the call.
+        unsafe { windows_sys::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID(id.as_ptr()) };
+    }
+}
+
+/// Second launch: show, restore if minimised, raise and focus (the Python wake-file
+/// handler). Windows only lets the foreground owner take focus, so a plain `set_focus`
+/// from a background process just flashes the taskbar; toggling always-on-top raises it.
+fn bring_to_front(w: &tauri::WebviewWindow) {
+    let _ = w.show();
+    if w.is_minimized().unwrap_or(false) {
+        let _ = w.unminimize();
+    }
+    let _ = w.set_always_on_top(true);
+    let _ = w.set_always_on_top(false);
+    let _ = w.set_focus();
+}
+
 pub fn run() {
     #[cfg(debug_assertions)]
     if selftest() || update_selftest() {
         return;
     }
 
-    let config_path = paths::config_path();
-    // BLINKER_CONFIG_DIR runs (tests, side-by-side) never migrate the exe-dir config.
-    if !paths::config_dir_overridden() {
-        if let Some(legacy) = paths::legacy_config_path() {
-            config::migrate_legacy_config(&config_path, &legacy);
-        }
-    }
+    set_app_user_model_id();
 
+    // Single instance first: the plugin's setup runs before the window is created, so a
+    // second launch exits right there, before any config work, migration or poller.
+    // (Its own identifier: not the Python app's mutex/wake file, so both can coexist.)
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(w) = app.get_webview_window("main") {
+                bring_to_front(&w);
+            }
+        }))
         // Native pickers: `open` (folders/files) and `save` (theme export); capability
         // `dialog:allow-open` + `dialog:allow-save` only.
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
+            let config_path = paths::config_path();
+            // BLINKER_CONFIG_DIR runs (tests, side-by-side) never migrate the exe-dir config.
+            if !paths::config_dir_overridden() {
+                if let Some(legacy) = paths::legacy_config_path() {
+                    config::migrate_legacy_config(&config_path, &legacy);
+                }
+            }
             let cfg = config::load(&config_path);
             let ports = Arc::new(Mutex::new(cfg.folders.iter().map(|f| f.port).collect::<Vec<_>>()));
             let sink = Arc::new(TauriSink { app: app.handle().clone() });
@@ -142,4 +175,28 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running BlinkerUI");
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::set_app_user_model_id;
+
+    #[test]
+    fn explicit_aumid_is_blinker_ui() {
+        use windows_sys::Win32::UI::Shell::GetCurrentProcessExplicitAppUserModelID;
+        set_app_user_model_id();
+        let mut p: windows_sys::core::PWSTR = std::ptr::null_mut();
+        // SAFETY: out-pointer is valid; the returned string is read before being freed.
+        let hr = unsafe { GetCurrentProcessExplicitAppUserModelID(&mut p) };
+        assert_eq!(hr, 0);
+        let mut len = 0;
+        // SAFETY: `p` is a NUL-terminated string allocated by COM on success.
+        let id = unsafe {
+            while *p.add(len) != 0 {
+                len += 1;
+            }
+            String::from_utf16_lossy(std::slice::from_raw_parts(p, len))
+        };
+        assert_eq!(id, "blinker.ui");
+    }
 }
