@@ -265,10 +265,13 @@ pub fn safe_file_name(name: &str, fallback: &str) -> String {
 
 /// Asset URLs must be `https://`. `local_http_ok` (debug builds with
 /// `BLINKER_UPDATE_API` set) also allows `http://127.0.0.1` for the local test server.
+/// Decided on the parsed target (what WinHTTP connects to); URLs with user info are
+/// refused.
 pub fn url_allowed(url: &str, local_http_ok: bool) -> bool {
-    let lower = url.to_ascii_lowercase();
-    lower.starts_with("https://")
-        || (local_http_ok && (lower.starts_with("http://127.0.0.1:") || lower.starts_with("http://127.0.0.1/")))
+    match winhttp::split_url(url) {
+        Ok(t) if !t.userinfo => t.secure || (local_http_ok && t.host == "127.0.0.1"),
+        _ => false,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -444,14 +447,33 @@ fn insecure_url(url: &str) -> String {
     format!("refusing a non-https URL: {url}")
 }
 
-/// The whole check (blocking): source-run message, request, decision.
+/// The offer of the last check, applied by `apply` (the webview never chooses what gets
+/// downloaded or installed). Every check replaces it.
+static OFFER: Mutex<Option<Offer>> = Mutex::new(None);
+
+fn store_offer(c: &UpdateCheck) {
+    let offer = match c {
+        UpdateCheck::Available { offer, .. } => Some(offer.clone()),
+        _ => None,
+    };
+    *OFFER.lock().unwrap_or_else(|e| e.into_inner()) = offer;
+}
+
+fn take_offer() -> Option<Offer> {
+    OFFER.lock().unwrap_or_else(|e| e.into_inner()).take()
+}
+
+/// The whole check (blocking): source-run message, request, decision. An available
+/// update is kept for `apply`.
 pub fn check() -> UpdateCheck {
     let url = match api_override() {
         Some(u) => u,
         None if cfg!(debug_assertions) => return from_source_check(),
         None => UPDATE_API.to_string(),
     };
-    check_url(&url, local_http_ok(), VERSION)
+    let c = check_url(&url, local_http_ok(), VERSION);
+    store_offer(&c);
+    c
 }
 
 /// `check` against an explicit URL and version (also used by the self-test).
@@ -507,10 +529,9 @@ pub fn download_and_verify(
     if let Err(e) = winhttp::download(zip_url, &zip_path, DOWNLOAD_TIMEOUT_MS) {
         return Verified::DownloadFailed(e.to_string());
     }
+    // Python (`if sha_asset is not None:`): no .sha256 asset, no check and no question.
     let Some((sha_url, sha_name)) = sha else {
-        // Python installs without a check when the release has no .sha256 asset; here
-        // the user is asked first (controller ruling, Task 12).
-        return Verified::Unverifiable { zip: zip_path, error: "the release has no .zip.sha256 asset".into() };
+        return Verified::Ready(zip_path);
     };
     let check = || -> Result<Option<(String, String)>, String> {
         let sha_url = sha_url.ok_or(NO_URL)?;
@@ -570,13 +591,23 @@ pub fn updater_args(script: &Path, pid: u32, zip: &Path, install: &Path, exe: &P
     a
 }
 
+/// `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe` when it exists, else
+/// plain `powershell.exe` (PATH lookup).
+pub fn powershell_path(system_root: Option<std::ffi::OsString>, exists: impl Fn(&Path) -> bool) -> PathBuf {
+    system_root
+        .filter(|r| !r.is_empty())
+        .map(|r| PathBuf::from(r).join("System32").join("WindowsPowerShell").join("v1.0").join("powershell.exe"))
+        .filter(|p| exists(p))
+        .unwrap_or_else(|| PathBuf::from("powershell.exe"))
+}
+
 /// `_spawn_updater`: write `UPDATER_PS1` to `%TEMP%\blinker_updater.ps1` (UTF-8, CRLF:
 /// Python's `write_text` on Windows) and start it in the background; it waits for `pid`
 /// to exit.
 pub fn spawn_updater(zip: &Path, install: &Path, exe: &Path, pid: u32) -> Result<(), String> {
     let script = std::env::temp_dir().join(SCRIPT_NAME);
     std::fs::write(&script, UPDATER_PS1.replace('\n', "\r\n")).map_err(|e| pyerr::os_error(&e, &script))?;
-    let mut cmd = std::process::Command::new("powershell.exe");
+    let mut cmd = std::process::Command::new(powershell_path(std::env::var_os("SystemRoot"), Path::is_file));
     cmd.args(updater_args(&script, pid, zip, install, exe))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -618,8 +649,12 @@ pub enum ApplyResult {
 /// The zip waiting for the user's "Proceed anyway?" answer.
 static PENDING: Mutex<Option<PathBuf>> = Mutex::new(None);
 
+/// Set the pending zip; a different zip pending before is deleted.
 fn set_pending(p: Option<PathBuf>) {
-    *PENDING.lock().unwrap_or_else(|e| e.into_inner()) = p;
+    let old = std::mem::replace(&mut *PENDING.lock().unwrap_or_else(|e| e.into_inner()), p.clone());
+    if let Some(old) = old.filter(|o| Some(o) != p.as_ref()) {
+        let _ = std::fs::remove_file(old);
+    }
 }
 
 /// Take the pending zip if `zip_path` names it (the UI cannot point the updater or the
@@ -670,13 +705,23 @@ pub fn launch_result(zip: &Path, spawn: impl FnOnce(&Path) -> Result<(), String>
     }
 }
 
-/// `apply_update` (blocking): download into `%TEMP%`, verify, start the updater.
-/// `sha_name` is None when the release has no `.zip.sha256` asset.
-pub fn apply(zip_url: Option<&str>, zip_name: &str, sha_url: Option<&str>, sha_name: Option<&str>) -> ApplyResult {
+/// `apply_update` (blocking): download the offer of the last check into `%TEMP%`,
+/// verify, start the updater. A zip still waiting for "Proceed anyway?" is deleted.
+pub fn apply() -> ApplyResult {
     set_pending(None);
-    let sha = sha_name.map(|n| (sha_url, n));
-    let v = download_and_verify(zip_url, zip_name, sha, &std::env::temp_dir(), local_http_ok());
+    let Some(offer) = take_offer() else {
+        return ApplyResult::DownloadFailed {
+            dialog: dialog("Updates", Icon::Critical, "Download failed:\nno update is pending; check for updates first".into()),
+        };
+    };
+    let v = apply_offer(&offer, &std::env::temp_dir(), local_http_ok());
     verified_result(v, spawn_updater_for_self)
+}
+
+/// Download and verify an offer's assets.
+pub fn apply_offer(offer: &Offer, tmp: &Path, local_http_ok: bool) -> Verified {
+    let sha = offer.sha.as_ref().map(|a| (a.url.as_deref(), a.name.as_str()));
+    download_and_verify(offer.zip.url.as_deref(), &offer.zip.name, sha, tmp, local_http_ok)
 }
 
 /// "Proceed anyway?" -> Yes.
@@ -829,6 +874,151 @@ mod tests {
         assert!(!url_allowed("http://127.0.0.1.evil.com/x.zip", true));
         assert!(!url_allowed("http://127.0.0.1@evil.com/x.zip", true));
         assert!(!url_allowed("http://github.com/x.zip", true));
+        // user info: the prefix "http://127.0.0.1:" would pass a string check
+        assert!(!url_allowed("http://127.0.0.1:1@evil.com/x.zip", true));
+        assert!(!url_allowed("http://u:p@127.0.0.1:8000/x.zip", true));
+        assert!(!url_allowed("https://u@github.com/x.zip", false));
+        assert!(!url_allowed("http://localhost:8000/x.zip", true));
+    }
+
+    #[test]
+    fn powershell_is_the_system_one_when_present() {
+        let abs = PathBuf::from("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+        assert_eq!(powershell_path(Some("C:\\Windows".into()), |p| p == abs), abs);
+        assert_eq!(powershell_path(Some("C:\\Windows".into()), |_| false), PathBuf::from("powershell.exe"));
+        assert_eq!(powershell_path(None, |_| true), PathBuf::from("powershell.exe"));
+        assert_eq!(powershell_path(Some("".into()), |_| true), PathBuf::from("powershell.exe"));
+    }
+
+    // ----- download + verify against a local HTTP server -----
+
+    /// Serves `routes` (path -> body; anything else 404) on 127.0.0.1 until the test ends.
+    fn serve(routes: Vec<(&'static str, Vec<u8>)>) -> String {
+        use std::io::{Read, Write};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for mut c in l.incoming().flatten() {
+                let mut req = Vec::new();
+                let mut b = [0u8; 1024];
+                while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match c.read(&mut b) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => req.extend_from_slice(&b[..n]),
+                    }
+                }
+                let line = String::from_utf8_lossy(&req).lines().next().unwrap_or("").to_string();
+                let path = line.split(' ').nth(1).unwrap_or("");
+                let (status, body) = match routes.iter().find(|(p, _)| *p == path) {
+                    Some((_, body)) => ("200 OK", body.clone()),
+                    None => ("404 Not Found", b"nope".to_vec()),
+                };
+                let head = format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+                let _ = c.write_all(head.as_bytes());
+                let _ = c.write_all(&body);
+            }
+        });
+        format!("http://127.0.0.1:{port}")
+    }
+
+    const ZIP_BYTES: &[u8] = b"PK fake zip";
+
+    fn zip_hash() -> String {
+        sha256_hex(file_with(ZIP_BYTES).path()).unwrap()
+    }
+
+    fn offer_for(base: &str, sha_path: Option<&str>) -> Offer {
+        Offer {
+            current: "0.1.0".into(),
+            tag: "v0.2.0".into(),
+            notes_preview: String::new(),
+            zip: Asset { name: "BlinkerUI-v0.2.0.zip".into(), url: Some(format!("{base}/z.zip")) },
+            sha: sha_path.map(|p| Asset { name: "BlinkerUI-v0.2.0.zip.sha256".into(), url: Some(format!("{base}{p}")) }),
+        }
+    }
+
+    #[test]
+    fn no_sha_asset_installs_without_asking() {
+        let base = serve(vec![("/z.zip", ZIP_BYTES.to_vec())]);
+        let tmp = tempfile::tempdir().unwrap();
+        let v = apply_offer(&offer_for(&base, None), tmp.path(), true);
+        let zip = tmp.path().join("BlinkerUI-v0.2.0.zip");
+        assert_eq!(v, Verified::Ready(zip.clone()));
+        assert_eq!(std::fs::read(&zip).unwrap(), ZIP_BYTES);
+        // ... and the UI result is Started straight away (no "Proceed anyway?")
+        assert_eq!(verified_result(v, |_| Ok(())), ApplyResult::Started);
+    }
+
+    #[test]
+    fn matching_sha_is_ready_and_tampered_sha_deletes_the_zip() {
+        let good = format!("{}  BlinkerUI-v0.2.0.zip\n", zip_hash().to_uppercase());
+        let base = serve(vec![
+            ("/z.zip", ZIP_BYTES.to_vec()),
+            ("/good.sha256", good.into_bytes()),
+            ("/bad.sha256", "0".repeat(64).into_bytes()),
+        ]);
+        let tmp = tempfile::tempdir().unwrap();
+        let zip = tmp.path().join("BlinkerUI-v0.2.0.zip");
+        assert_eq!(apply_offer(&offer_for(&base, Some("/good.sha256")), tmp.path(), true), Verified::Ready(zip.clone()));
+        assert!(!tmp.path().join("BlinkerUI-v0.2.0.zip.sha256").exists(), "sha file removed after reading");
+        let v = apply_offer(&offer_for(&base, Some("/bad.sha256")), tmp.path(), true);
+        assert_eq!(v, Verified::Mismatch { expected: "0".repeat(64), actual: zip_hash() });
+        assert!(!zip.exists(), "zip deleted on mismatch");
+    }
+
+    #[test]
+    fn sha_download_failure_asks_proceed_anyway() {
+        let base = serve(vec![("/z.zip", ZIP_BYTES.to_vec()), ("/empty.sha256", Vec::new())]);
+        let tmp = tempfile::tempdir().unwrap();
+        let zip = tmp.path().join("BlinkerUI-v0.2.0.zip");
+        let v = apply_offer(&offer_for(&base, Some("/missing.sha256")), tmp.path(), true);
+        assert_eq!(v, Verified::Unverifiable { zip: zip.clone(), error: "HTTP 404".into() });
+        assert!(zip.exists(), "zip kept until the user answers");
+        let v = apply_offer(&offer_for(&base, Some("/empty.sha256")), tmp.path(), true);
+        assert_eq!(v, Verified::Unverifiable { zip, error: "list index out of range".into() });
+    }
+
+    #[test]
+    fn zip_download_failure_and_insecure_urls() {
+        let base = serve(vec![]);
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(apply_offer(&offer_for(&base, None), tmp.path(), true), Verified::DownloadFailed("HTTP 404".into()));
+        assert!(!tmp.path().join("BlinkerUI-v0.2.0.zip").exists(), "partial download removed");
+        assert_eq!(
+            apply_offer(&offer_for(&base, None), tmp.path(), false),
+            Verified::DownloadFailed(format!("refusing a non-https URL: {base}/z.zip"))
+        );
+    }
+
+    /// Tests that touch the process-wide PENDING / OFFER state run one at a time.
+    static GLOBALS: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn apply_without_a_checked_offer_is_an_error_and_check_replaces_the_offer() {
+        let _g = GLOBALS.lock().unwrap_or_else(|e| e.into_inner());
+        store_offer(&UpdateCheck::UpToDate { dialog: dialog("Updates", Icon::Information, String::new()) });
+        let ApplyResult::DownloadFailed { dialog: dg } = apply() else { panic!() };
+        assert_eq!(dg.text, "Download failed:\nno update is pending; check for updates first");
+        let o = offer_for("https://example.com", None);
+        store_offer(&decision_check(Decision::Available(o.clone()), "0.1.0"));
+        assert_eq!(take_offer(), Some(o));
+        assert_eq!(take_offer(), None);
+    }
+
+    #[test]
+    fn a_new_pending_zip_deletes_the_old_one() {
+        let _g = GLOBALS.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let (a, b) = (tmp.path().join("a.zip"), tmp.path().join("b.zip"));
+        std::fs::write(&a, b"a").unwrap();
+        std::fs::write(&b, b"b").unwrap();
+        set_pending(Some(a.clone()));
+        set_pending(Some(a.clone())); // the same zip again is kept
+        assert!(a.exists());
+        set_pending(Some(b.clone()));
+        assert!(!a.exists() && b.exists());
+        set_pending(None);
+        assert!(!b.exists());
     }
 
     // ----- decisions -----
@@ -933,6 +1123,7 @@ mod tests {
 
     #[test]
     fn unverifiable_asks_and_only_the_pending_zip_continues() {
+        let _g = GLOBALS.lock().unwrap_or_else(|e| e.into_inner());
         let r = verified_result(Verified::Unverifiable { zip: "C:\\t\\u.zip".into(), error: "HTTP 404".into() }, |_| Ok(()));
         let ApplyResult::ShaUnverifiable { zip_path, dialog: dg } = r else { panic!() };
         assert_eq!(dg.text, "Could not verify SHA256 (HTTP 404).\nProceed anyway?");

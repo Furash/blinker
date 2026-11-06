@@ -378,11 +378,9 @@ async function checkForUpdates() {
     if (r.kind !== "available") return void (await showBox(r.dialog));
     if (!(await confirm(r.dialog.title, r.dialog.text))) return;
 
-    const { zip, sha } = r.offer;
+    // The backend applies the offer it kept from this check (no URLs from the webview).
     busy(true);
-    let a = await invoke("apply_update", {
-      zipUrl: zip.url, zipName: zip.name, shaUrl: sha ? sha.url : null, shaName: sha ? sha.name : null,
-    }).catch((e) => ({ kind: "download_failed", dialog: { title: "Updates", text: `Download failed:\n${e}`, icon: "critical" } }));
+    let a = await invoke("apply_update").catch((e) => ({ kind: "download_failed", dialog: { title: "Updates", text: `Download failed:\n${e}`, icon: "critical" } }));
     busy(false);
     if (a.kind === "sha_unverifiable") {
       if (!(await confirm(a.dialog.title, a.dialog.text, "warning"))) {

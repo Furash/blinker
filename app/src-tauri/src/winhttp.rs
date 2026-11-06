@@ -36,6 +36,8 @@ pub struct Target {
     pub port: u16,
     /// path (default `/`) plus `?query`; the fragment is dropped
     pub path: String,
+    /// the netloc has `user[:password]@`
+    pub userinfo: bool,
 }
 
 fn is_scheme(s: &str) -> bool {
@@ -64,6 +66,7 @@ pub fn split_url(url: &str) -> Result<Target, String> {
     let rest = rest.split('#').next().unwrap_or("");
     let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
 
+    let userinfo = netloc.contains('@');
     let hostinfo = netloc.rsplit('@').next().unwrap_or("");
     let (host, port) = if let Some(b) = hostinfo.strip_prefix('[') {
         let (h, after) = b.split_once(']').unwrap_or((b, ""));
@@ -87,7 +90,7 @@ pub fn split_url(url: &str) -> Result<Target, String> {
         full.push('?');
         full.push_str(query);
     }
-    Ok(Target { secure, host: host.to_lowercase(), port, path: full })
+    Ok(Target { secure, host: host.to_lowercase(), port, path: full, userinfo })
 }
 
 fn user_agent() -> String {
@@ -222,7 +225,7 @@ mod tests {
     use super::*;
 
     fn t(secure: bool, host: &str, port: u16, path: &str) -> Target {
-        Target { secure, host: host.into(), port, path: path.into() }
+        Target { secure, host: host.into(), port, path: path.into(), userinfo: false }
     }
 
     #[test]
@@ -232,7 +235,10 @@ mod tests {
             t(true, "api.github.com", 443, "/repos/Furash/blinker/releases/latest")
         );
         assert_eq!(split_url("HTTP://127.0.0.1:8123").unwrap(), t(false, "127.0.0.1", 8123, "/"));
-        assert_eq!(split_url("https://u:p@Host.Example:8443/a?b=1#frag").unwrap(), t(true, "host.example", 8443, "/a?b=1"));
+        assert_eq!(
+            split_url("https://u:p@Host.Example:8443/a?b=1#frag").unwrap(),
+            Target { userinfo: true, ..t(true, "host.example", 8443, "/a?b=1") }
+        );
         assert_eq!(split_url("https://[::1]:9/x").unwrap(), t(true, "::1", 9, "/x"));
         assert_eq!(split_url("https://h:0/").unwrap(), t(true, "h", 443, "/"));
     }

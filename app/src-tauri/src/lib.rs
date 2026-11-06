@@ -44,19 +44,13 @@ fn update_selftest() -> bool {
     }
     let check = updater::check();
     println!("check: {}", json(&check));
-    let updater::UpdateCheck::Available { offer, .. } = check else {
+    let updater::UpdateCheck::Available { .. } = check else {
         return true;
     };
     if args.iter().any(|a| a == "--check-only") {
         return true;
     }
-    let sha = offer.sha.as_ref();
-    let mut r = updater::apply(
-        offer.zip.url.as_deref(),
-        &offer.zip.name,
-        sha.and_then(|a| a.url.as_deref()),
-        sha.map(|a| a.name.as_str()),
-    );
+    let mut r = updater::apply();
     println!("apply: {}", json(&r));
     if let updater::ApplyResult::ShaUnverifiable { zip_path, .. } = &r {
         if args.iter().any(|a| a == "--proceed-unverified") {

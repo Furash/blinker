@@ -572,20 +572,11 @@ pub async fn check_for_updates() -> Result<updater::UpdateCheck, String> {
 
 /// After Yes: download the zip into `%TEMP%`, verify its SHA-256, start the updater
 /// script and quit (`QApplication.quit()`; running Blenders are closed as on window
-/// close). The URLs and names are the `offer` from `check_for_updates`.
+/// close). It installs the offer the backend kept from `check_for_updates`; the webview
+/// passes no URLs or names.
 #[tauri::command]
-pub async fn apply_update(
-    app: AppHandle,
-    zip_url: Option<String>,
-    zip_name: String,
-    sha_url: Option<String>,
-    sha_name: Option<String>,
-) -> Result<updater::ApplyResult, String> {
-    let r = tauri::async_runtime::spawn_blocking(move || {
-        updater::apply(zip_url.as_deref(), &zip_name, sha_url.as_deref(), sha_name.as_deref())
-    })
-    .await
-    .map_err(|e| e.to_string())?;
+pub async fn apply_update(app: AppHandle) -> Result<updater::ApplyResult, String> {
+    let r = tauri::async_runtime::spawn_blocking(updater::apply).await.map_err(|e| e.to_string())?;
     quit_if_started(&app, &r);
     Ok(r)
 }

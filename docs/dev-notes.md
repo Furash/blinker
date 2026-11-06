@@ -37,6 +37,6 @@ End-to-end recipe (never on the real install or config): copy a debug v0.1.0 bui
 (`tag_name`, `body`, `assets[].name` / `browser_download_url`) and the assets with
 `python -I -m http.server <port> --bind 127.0.0.1`; then run the installed exe with
 `BLINKER_UPDATE_API=http://127.0.0.1:<port>/<json>`, `BLINKER_CONFIG_DIR=<scratch>\cfg`
-and `TEMP`/`TMP=<scratch>	mp` (the script, the zip, the stage folder and
+and `TEMP`/`TMP=<scratch>\tmp` (the script, the zip, the stage folder and
 `blinker_update.log` go to `%TEMP%`). Setting `BLINKER_READY_LOG` as well shows that the
 relaunched app opened its window.
