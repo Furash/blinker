@@ -76,21 +76,46 @@ fn set_app_user_model_id() {
     {
         let id: Vec<u16> = "blinker.ui\0".encode_utf16().collect();
         // SAFETY: `id` is a valid NUL-terminated UTF-16 string for the call.
-        unsafe { windows_sys::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID(id.as_ptr()) };
+        let hr = unsafe { windows_sys::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID(id.as_ptr()) };
+        debug_assert!(hr >= 0, "SetCurrentProcessExplicitAppUserModelID failed: {hr:#x}");
+        let _ = hr;
     }
+}
+
+/// Set once the frontend has shown the main window (first paint done, `report_ready`).
+pub(crate) static WINDOW_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// What the first instance does on a second launch.
+#[derive(Debug, PartialEq, Eq)]
+struct SecondLaunch {
+    show: bool,
+    unminimize: bool,
+    raise: bool,
+}
+
+/// Before the window has been shown for the first time (themed first frame still
+/// pending) a second launch must not show it: the frontend does that after first paint.
+fn second_launch_actions(ready: bool, minimized: bool) -> SecondLaunch {
+    SecondLaunch { show: ready, unminimize: ready && minimized, raise: ready }
 }
 
 /// Second launch: show, restore if minimised, raise and focus (the Python wake-file
 /// handler). Windows only lets the foreground owner take focus, so a plain `set_focus`
 /// from a background process just flashes the taskbar; toggling always-on-top raises it.
 fn bring_to_front(w: &tauri::WebviewWindow) {
-    let _ = w.show();
-    if w.is_minimized().unwrap_or(false) {
+    let ready = WINDOW_READY.load(std::sync::atomic::Ordering::SeqCst);
+    let act = second_launch_actions(ready, w.is_minimized().unwrap_or(false));
+    if act.show {
+        let _ = w.show();
+    }
+    if act.unminimize {
         let _ = w.unminimize();
     }
-    let _ = w.set_always_on_top(true);
-    let _ = w.set_always_on_top(false);
-    let _ = w.set_focus();
+    if act.raise {
+        let _ = w.set_always_on_top(true);
+        let _ = w.set_always_on_top(false);
+        let _ = w.set_focus();
+    }
 }
 
 pub fn run() {
@@ -175,6 +200,24 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running BlinkerUI");
+}
+
+#[cfg(test)]
+mod second_launch_tests {
+    use super::*;
+
+    #[test]
+    fn early_second_launch_does_nothing() {
+        let none = SecondLaunch { show: false, unminimize: false, raise: false };
+        assert_eq!(second_launch_actions(false, false), none);
+        assert_eq!(second_launch_actions(false, true), none);
+    }
+
+    #[test]
+    fn ready_second_launch_shows_restores_and_raises() {
+        assert_eq!(second_launch_actions(true, true), SecondLaunch { show: true, unminimize: true, raise: true });
+        assert_eq!(second_launch_actions(true, false), SecondLaunch { show: true, unminimize: false, raise: true });
+    }
 }
 
 #[cfg(all(test, windows))]

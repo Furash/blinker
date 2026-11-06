@@ -615,6 +615,8 @@ pub fn is_dev() -> bool {
 /// (startup measurement, tools/measure_startup.ps1); otherwise this does nothing.
 #[tauri::command]
 pub fn report_ready(ms: f64) {
+    // The frontend has shown the themed window (it calls this right after `show`).
+    crate::WINDOW_READY.store(true, std::sync::atomic::Ordering::SeqCst);
     if let Some(p) = std::env::var_os("BLINKER_READY_LOG").filter(|p| !p.is_empty()) {
         use std::io::Write;
         if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
