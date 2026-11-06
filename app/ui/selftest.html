@@ -11,7 +11,9 @@
 // Browser-run checks for the pure helpers (no Node). Open through a local static server.
 import { metaText, baseName, sortFavouritesFirst, parseAliases, capLines, parsePort,
   selectionAfterRemove, nextPort, textAfterSnapshot, runningFromStatus, SaveQueue, ConsoleFeed,
-  pathKey, addonLabel, scanItems, checkedAddons, setAllChecked, appendFolders, editResult, spinValue, blendStart } from "./logic.js";
+  pathKey, addonLabel, scanItems, checkedAddons, setAllChecked, appendFolders, editResult, spinValue, blendStart,
+  parseSpin, commitSettings, importNotes, completeFrom } from "./logic.js";
+import { invoke, isMock } from "./api.js";
 import { OutputPane } from "./output.js";
 
 const out = document.getElementById("out");
@@ -190,6 +192,44 @@ check("spin value typed", spinValue("12345", 9876), 12345);
 check("spin value intermediate keeps last", spinValue("12", 9876), 9876);
 check("spin value out of range keeps last", spinValue("70000", 9876), 9876);
 check("blend start: blend, path, empty", [blendStart("b", "p"), blendStart("", "p"), blendStart("", "")], ["b", "p", ""]);
+
+// Task 11: Settings (pure parts)
+check("parseSpin range", [parseSpin("7", 7, 24), parseSpin("24", 7, 24), parseSpin("6", 7, 24), parseSpin("25", 7, 24), parseSpin("1a", 7, 24)], [7, 24, null, null, null]);
+check("parsePort still 5 digits", [parsePort("009876"), parsePort("9876")], [null, 9876]);
+{
+  const defaults = { theme: { ui_font_family: "Segoe UI", mono_font_family: "Cascadia Mono" }, terminal: "wt T" };
+  const r = commitSettings({ accent_fg: "#123456", ui_font_family: "old" },
+    { uiFamily: "", uiSize: 12, monoFamily: "Consolas", monoSize: 9, terminal: "   ", aiAliases: " claude, x ", blenderPath: "  C:/b.exe " }, defaults);
+  check("commit inputs: blank family -> default, sizes, strip, blank terminal -> default", r, {
+    theme: { accent_fg: "#123456", ui_font_family: "Segoe UI", ui_font_size: 12, mono_font_family: "Consolas", mono_font_size: 9 },
+    terminal: "wt T", ai_aliases: "claude, x", blender_path: "C:/b.exe" });
+  check("commit inputs: terminal kept stripped", commitSettings({}, { uiFamily: "a", uiSize: 7, monoFamily: "b", monoSize: 7, terminal: " t ", aiAliases: "", blenderPath: "" }, defaults).terminal, "t");
+}
+check("import notes none", importNotes([], []), null);
+check("import notes both", importNotes(["a", "b"], ["window_bg"]), "Ignored unknown keys: a, b\nInvalid values for: window_bg");
+check("import notes invalid only", importNotes([], ["x"]), "Invalid values for: x");
+check("inline completion case-insensitive, first match", completeFrom(["Arial", "Cascadia Code", "Cascadia Mono", "Consolas"], "cas"), "Cascadia Code");
+check("inline completion none", [completeFrom(["Arial"], "z"), completeFrom(["Arial"], "")], [null, null]);
+
+// Task 11: the backend's theme helpers through invoke (the real Rust commands when this
+// page runs in the app's webview, the mock otherwise). Expected values: Python's
+// SettingsDialog._normalize_hex / _detect_preset.
+{
+  const HEX = [["#ABC", "#aabbcc"], ["abc", "#aabbcc"], ["  #1E1F22 ", "#1e1f22"], ["1e1f22", "#1e1f22"], ["##abc", "#aabbcc"],
+    ["abcd", null], ["ggg", null], ["", null], ["#12345", null], ["#1234567", null], [" #aBc ", "#aabbcc"], ["#a b", null],
+    ["fff", "#ffffff"], ["#FFFFFF", "#ffffff"], ["12345g", null], ["#\u0661\u0662\u0663", null], ["\tabc\n", "#aabbcc"],
+    ["#\uff41\uff42\uff43", null]];
+  const got = await Promise.all(HEX.map(([s]) => invoke("normalize_hex", { s })));
+  HEX.forEach(([s, want], i) => check(`normalize_hex ${JSON.stringify(s)} (${isMock ? "mock" : "rust"})`, got[i], want));
+  const st = await invoke("get_state");
+  for (const [i, name] of st.presets.entries()) {
+    check(`detect_preset ${name}`, await invoke("detect_preset", { theme: st.preset_themes[i] }), name);
+  }
+  const custom = { ...st.preset_themes[2], accent_fg: "#000000" };
+  check("detect_preset modified -> Custom", await invoke("detect_preset", { theme: custom }), "Custom");
+  check("detect_preset fonts ignored", await invoke("detect_preset", { theme: { ...st.preset_themes[1], ui_font_size: 20 } }), "Frigus Nox");
+  check("detect_preset empty -> Custom", await invoke("detect_preset", { theme: {} }), "Custom");
+}
 
 const sum = document.createElement("div");
 sum.className = failed ? "fail" : "pass";

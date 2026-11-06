@@ -7,6 +7,7 @@ import { OutputPane } from "./output.js";
 import { message, confirm, notImplemented } from "./dialog.js";
 import { scanDialog } from "./scan.js";
 import { editDialog } from "./edit.js";
+import { settingsDialog } from "./settings.js";
 import {
   parseAliases, sortFavouritesFirst, selectionAfterRemove, runningFromStatus, SaveQueue, ConsoleFeed,
   appendFolders,
@@ -328,6 +329,32 @@ async function removeFolder(idx) {
   refreshRows();
 }
 
+// ---------- settings ----------
+
+/** Shared by OK and Apply (`_open_settings` / `SettingsDialog._apply`). */
+async function commitSettings(r) {
+  state.config.theme = { ...r.theme };
+  state.config.terminal = r.terminal;
+  state.config.ai_aliases = r.ai_aliases;
+  state.config.blender_path = r.blender_path;
+  save();
+  applyTheme(state.config.theme);
+  await loadIcons(state.config.ai_aliases); // AI buttons follow ai_aliases
+  refreshRows();
+}
+
+/** `_open_settings`. Cancel puts the committed theme back over the live preview. */
+async function openSettings() {
+  const c = state.config;
+  const res = await settingsDialog(
+    { theme: c.theme, terminal: c.terminal, ai_aliases: c.ai_aliases, blender_path: c.blender_path },
+    state.settingsInfo,
+    { onApply: commitSettings, preview: applyTheme, tab: mockScenario ? mockScenario.tab : 0 },
+  );
+  if (res) await commitSettings(res);
+  else applyTheme(state.config.theme);
+}
+
 const handlers = {
   select,
   launch: (i) => launch(i),
@@ -427,6 +454,11 @@ async function main() {
   state.config = st.config;
   applyTheme(mergeTheme(st.default_theme, st.config.theme));
   state.config.theme = mergeTheme(st.default_theme, st.config.theme);
+  state.settingsInfo = {
+    presets: st.presets.map((name, i) => ({ name, theme: st.preset_themes[i] })),
+    colorKeys: st.color_keys,
+    defaults: { theme: st.default_theme, terminal: st.default_terminal, ai_aliases: st.default_ai_aliases },
+  };
   $("config-label").textContent = `Config: ${st.config_path}`;
   state.running = runningFromStatus(folders().map((f) => f.port), st.running || {});
   state.selected = folders().length ? 0 : null;
@@ -451,7 +483,7 @@ async function main() {
   invoke("probe_now", { ports: folders().map((f) => f.port) }).catch(() => {});
 
   $("act-add").addEventListener("click", addFolder);
-  $("act-settings").addEventListener("click", () => notImplemented("Settings")); // TODO(Task 11)
+  $("act-settings").addEventListener("click", openSettings);
   $("act-update").addEventListener("click", () => notImplemented("Updates")); // TODO(Task 12)
 
   // Show only after the themed first frame is painted (no flash of unthemed content).
@@ -468,6 +500,7 @@ async function main() {
   const d = mockScenario && mockScenario.dialog;
   if (d === "scan" || d === "noaddons") addFolder();
   else if (d === "edit") editFolder(1);
+  else if (d === "settings") openSettings();
 }
 
 main().catch(async (e) => {
@@ -476,5 +509,5 @@ main().catch(async (e) => {
   message("Blinker UI", `Startup failed:\n${errText(e)}`, "critical");
 });
 
-// exposed for later tasks (Settings live preview, dialogs)
+// exposed for later tasks (dialogs)
 export { state, applyTheme, refreshRows, save };

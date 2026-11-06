@@ -3,7 +3,7 @@
 // [btn_row: Launch/Kill, Reload, Restart, Clear console, │, AI aliases], fav,
 // Open folder (new), Edit, ✕.
 
-import { metaText, parseAliases, parsePort, PORT_MIN, PORT_MAX } from "./logic.js";
+import { metaText, parseAliases, parseSpin, PORT_MIN, PORT_MAX } from "./logic.js";
 
 const el = (tag, cls, text) => {
   const e = document.createElement(tag);
@@ -22,16 +22,17 @@ function button(text, onClick, opts = {}) {
 }
 
 /**
- * QSpinBox stand-in: digits, 1024-65535, arrows/wheel/keys step by 1. `onCommit(v)` runs
- * on editingFinished with a changed value; `wrap.dataset.port` is the last committed value.
+ * QSpinBox stand-in: digits, `min`-`max`, arrows/wheel/keys step by 1. `onCommit(v)`
+ * runs on editingFinished with a changed value; `onStep(v)` after each arrow/wheel/key
+ * step (valueChanged); `wrap.dataset.value` is the last committed value.
  */
-export function portSpin(value, disabled, onCommit, title = "TCP port the bootstrap server listens on") {
+export function spinBox({ value, min, max, disabled = false, onCommit = () => {}, onStep = () => {}, title = "" }) {
   const wrap = el("div", "spin");
   if (title) wrap.title = title;
   const input = el("input");
   input.type = "text";
   input.inputMode = "numeric";
-  input.maxLength = 5;
+  input.maxLength = String(max).length;
   input.spellcheck = false;
   input.value = String(value);
   const up = el("button", "spin-up");
@@ -41,24 +42,34 @@ export function portSpin(value, disabled, onCommit, title = "TCP port the bootst
   wrap.append(input, up, down);
   setSpinDisabled(wrap, disabled);
 
-  wrap.dataset.port = String(value); // last committed value
+  const parse = (t) => parseSpin(t, min, max);
+  wrap.dataset.value = String(value); // last committed value
   const step = (d) => {
-    const v = parsePort(input.value) ?? Number(wrap.dataset.port);
-    input.value = String(Math.min(PORT_MAX, Math.max(PORT_MIN, v + d)));
+    const v = parse(input.value) ?? Number(wrap.dataset.value);
+    input.value = String(Math.min(max, Math.max(min, v + d)));
+    onStep(Number(input.value));
   };
   // editingFinished: Enter or focus loss; emit only when the value changed.
   const commit = () => {
-    const v = parsePort(input.value);
+    const v = parse(input.value);
     if (v === null) {
-      input.value = wrap.dataset.port;
+      input.value = wrap.dataset.value;
       return;
     }
     input.value = String(v);
-    if (String(v) !== wrap.dataset.port) {
-      wrap.dataset.port = String(v);
+    if (String(v) !== wrap.dataset.value) {
+      wrap.dataset.value = String(v);
       onCommit(v);
     }
   };
+  /** QSpinBox.setValue (clamped to the range), without onCommit. */
+  wrap.setValue = (v) => {
+    const c = String(Math.min(max, Math.max(min, Math.trunc(Number(v)))));
+    input.value = c;
+    wrap.dataset.value = c;
+  };
+  /** QSpinBox.value(): the typed value if valid, else the last value. */
+  wrap.value = () => parse(input.value) ?? Number(wrap.dataset.value);
   input.addEventListener("beforeinput", (e) => {
     if (e.data && /\D/.test(e.data)) e.preventDefault();
   });
@@ -89,6 +100,16 @@ export function portSpin(value, disabled, onCommit, title = "TCP port the bootst
     b.addEventListener("mouseup", stop);
     b.addEventListener("mouseleave", stop);
   }
+  return wrap;
+}
+
+/** The row's port box (1024-65535); `wrap.dataset.port` mirrors the committed value. */
+export function portSpin(value, disabled, onCommit, title = "TCP port the bootstrap server listens on") {
+  const wrap = spinBox({
+    value, min: PORT_MIN, max: PORT_MAX, disabled, title,
+    onCommit: (v) => { wrap.dataset.port = String(v); onCommit(v); },
+  });
+  wrap.dataset.port = String(value);
   return wrap;
 }
 
@@ -207,7 +228,7 @@ export function updateRow(listEl, state, i, h) {
   row.querySelector(".meta:not(.port-label)").textContent = metaText(f);
   const spin = row.querySelector(".spin");
   const input = spin.querySelector("input");
-  spin.dataset.port = String(f.port);
+  spin.dataset.port = spin.dataset.value = String(f.port);
   if (document.activeElement !== input) input.value = String(f.port);
   setSpinDisabled(spin, running);
   row.querySelector(".btn-row").replaceWith(buttonRow(i, running, state.launching.has(f.port), state.config.ai_aliases, state.icons, h));

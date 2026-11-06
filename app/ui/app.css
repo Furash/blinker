@@ -442,3 +442,129 @@ button, input { font: inherit; color: inherit; margin: 0; }
   -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'%3E%3Cpath d='M3.6 6.6 L6.1 10.3 L10.5 2.8' fill='none' stroke='black' stroke-width='1.6'/%3E%3C/svg%3E") center / 14px 14px no-repeat;
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'%3E%3Cpath d='M3.6 6.6 L6.1 10.3 L10.5 2.8' fill='none' stroke='black' stroke-width='1.6'/%3E%3C/svg%3E") center / 14px 14px no-repeat;
 }
+
+/* ---------- Settings dialog (settings.js, colors.js, combo.js) ---------- */
+.hidden { display: none !important; }
+.settings .dlg-buttons .left { margin-right: auto; }
+
+/* QTabWidget / QTabBar: tabs padding 6px 14px, top radius 6, no bottom border; the
+   pane (radius 6) starts under the tabs' last pixel row (top: -1px). */
+.tabwidget { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.tabbar { flex: none; display: flex; position: relative; z-index: 1; }
+.tab {
+  height: 30px;
+  padding: 6px 14px;
+  line-height: 17px;
+  background: var(--panel_bg);
+  color: var(--row_text_fg);
+  border: 1px solid var(--row_border);
+  border-bottom: none;
+  border-top-left-radius: 6px;
+  border-top-right-radius: 6px;
+  white-space: pre;
+}
+.tab.selected { background: var(--row_selected_bg); }
+.tab:hover { background: var(--row_hover_bg); }
+.tabpane {
+  flex: 1;
+  min-height: 0;
+  margin-top: -1px;
+  border: 1px solid var(--row_border);
+  border-radius: 6px;
+  padding: 9px;
+  display: flex;
+  flex-direction: column;
+}
+.tabpane > .page { flex: 1; min-height: 0; }
+.tabpane > .form { align-content: start; }
+.form .span { grid-column: 1 / -1; }
+.meta.wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
+.form .field-row .qbtn { flex: none; }
+
+/* QComboBox (+ ::drop-down 20 px, border-left; QAbstractItemView popup) */
+.combo {
+  position: relative;
+  display: flex;
+  height: 29px;
+  min-width: 0;
+  background: var(--input_bg);
+  color: var(--input_text_fg);
+  border: 1px solid var(--row_border);
+  border-radius: 5px;
+}
+.combo-edit, .combo-text {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0 8px;
+  border: none;
+  background: transparent;
+  color: var(--input_text_fg);
+  line-height: 27px;
+  white-space: pre;
+  overflow: hidden;
+}
+.combo-text { padding: 0 6px; }
+.combo-edit { cursor: text; }
+.combo-edit::selection { background: var(--accent_fg); }
+.combo-drop {
+  flex: none;
+  position: relative;
+  width: 21px;
+  background: var(--button_bg);
+  border-left: 1px solid var(--row_border);
+  border-top-right-radius: 4px;
+  border-bottom-right-radius: 4px;
+}
+.combo-drop:hover { background: var(--button_hover_bg); }
+.combo-drop::after {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 8px;
+  width: 10px;
+  height: 10px;
+  background: var(--row_text_fg);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2 4 L6 9 L10 4 Z'/%3E%3C/svg%3E") center / 10px 10px no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2 4 L6 9 L10 4 Z'/%3E%3C/svg%3E") center / 10px 10px no-repeat;
+}
+.combo-popup {
+  position: fixed;
+  z-index: 200;
+  overflow-y: auto;
+  background: var(--input_bg);
+  color: var(--input_text_fg);
+  border: 1px solid var(--row_border);
+  font-family: var(--ui_font_family), sans-serif;
+  font-size: var(--ui-font);
+  letter-spacing: inherit;
+}
+.combo-item { height: 21px; line-height: 21px; padding: 0 4px; white-space: pre; overflow: hidden; }
+.combo-item.hi { background: var(--accent_fg); }
+
+/* Colors tab: preset row, then a QScrollArea holding the QGridLayout (h 10, v 8) */
+.colors-page { display: flex; flex-direction: column; gap: 6px; }
+.preset-row { flex: none; display: flex; align-items: center; gap: 6px; height: 34px; }
+.preset-row .combo { flex: 1; }
+.preset-row .qbtn { flex: none; }
+.preset-label { line-height: 17px; white-space: pre; }
+.color-scroll { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; }
+.color-grid {
+  display: grid;
+  grid-template-columns: 1fr auto auto auto auto;
+  grid-auto-rows: 34px;
+  column-gap: 10px;
+  row-gap: 8px;
+  align-items: center;
+}
+.color-label { line-height: 17px; white-space: pre; overflow: hidden; }
+.swatch-cell { position: relative; width: 32px; height: 22px; }
+.swatch {
+  width: 32px;
+  height: 22px;
+  border: 1px solid rgba(127, 127, 127, 0.5);
+  border-radius: 4px;
+  background-clip: padding-box;
+}
+.color-input { position: absolute; left: 0; top: 0; width: 32px; height: 22px; opacity: 0; pointer-events: none; }
+.modal input.hex { width: 110px; align-self: start; margin-top: 2px; }

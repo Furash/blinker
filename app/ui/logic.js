@@ -46,11 +46,16 @@ export function capLines(text, max = OUTPUT_MAX_LINES) {
   return text;
 }
 
+/** QSpinBox text check: digits only, within `min`-`max`; else null. */
+export function parseSpin(text, min, max) {
+  if (!/^\s*\d{1,9}\s*$/.test(text)) return null;
+  const v = parseInt(text, 10);
+  return v >= min && v <= max ? v : null;
+}
+
 /** Port spin box value check (QSpinBox range 1024-65535, digits only). */
 export function parsePort(text) {
-  if (!/^\s*\d{1,5}\s*$/.test(text)) return null;
-  const v = parseInt(text, 10);
-  return v >= PORT_MIN && v <= PORT_MAX ? v : null;
+  return /^\s*\d{1,5}\s*$/.test(text) ? parseSpin(text, PORT_MIN, PORT_MAX) : null;
 }
 
 /** Selection fix after removing index `idx` (`_remove_folder`). */
@@ -153,6 +158,48 @@ export function spinValue(text, last) {
 /** EditFolderDialog._browse_blend start directory: blend, else path, else "". */
 export function blendStart(blend, path) {
   return blend || path || "";
+}
+
+// ---------- Settings dialog (SettingsDialog, blinker_ui.py:1835-2212) ----------
+
+export const FONT_SIZE_MIN = 7; // QSpinBox.setRange(7, 24)
+export const FONT_SIZE_MAX = 24;
+
+/**
+ * `_commit_inputs`: the dialog's result from its draft theme and field values.
+ * `defaults` = { theme, terminal } (DEFAULT_THEME, DEFAULT_TERMINAL).
+ */
+export function commitSettings(draft, f, defaults) {
+  return {
+    theme: {
+      ...draft,
+      ui_font_family: f.uiFamily || defaults.theme.ui_font_family,
+      ui_font_size: f.uiSize,
+      mono_font_family: f.monoFamily || defaults.theme.mono_font_family,
+      mono_font_size: f.monoSize,
+    },
+    terminal: String(f.terminal).trim() || defaults.terminal,
+    ai_aliases: String(f.aiAliases).trim(),
+    blender_path: String(f.blenderPath).trim(),
+  };
+}
+
+/** `_import_theme` tail: the "Import notes" text, or null when there is nothing to say. */
+export function importNotes(unknown, invalid) {
+  const msgs = [];
+  if (unknown.length) msgs.push(`Ignored unknown keys: ${unknown.join(", ")}`);
+  if (invalid.length) msgs.push(`Invalid values for: ${invalid.join(", ")}`);
+  return msgs.length ? msgs.join("\n") : null;
+}
+
+/**
+ * QComboBox inline completion (QCompleter::InlineCompletion, case-insensitive): the
+ * first item that starts with `typed`, or null.
+ */
+export function completeFrom(items, typed) {
+  if (!typed) return null;
+  const t = typed.toLowerCase();
+  return items.find((i) => i.toLowerCase().startsWith(t)) ?? null;
 }
 
 /**

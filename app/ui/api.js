@@ -41,6 +41,16 @@ export async function pickFile(title, filters = [], defaultPath = "") {
   return typeof r === "string" && r ? r : null;
 }
 
+/**
+ * Native save-file picker (QFileDialog.getSaveFileName); `defaultPath` may be a bare
+ * file name. Resolves to the chosen path or null.
+ */
+export async function pickSaveFile(title, filters = [], defaultPath = "") {
+  if (mock) return mock.pick("save", { title, filters, defaultPath });
+  const r = await T.dialog.save({ title, filters, defaultPath: defaultPath || undefined });
+  return typeof r === "string" && r ? r : null;
+}
+
 /** True in debug builds (devtools and reload keys stay available). */
 export async function isDev() {
   try {
