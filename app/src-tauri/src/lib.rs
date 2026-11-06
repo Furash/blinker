@@ -34,8 +34,11 @@ pub fn run() {
     }
 
     let config_path = paths::config_path();
-    if let Some(legacy) = paths::legacy_config_path() {
-        config::migrate_legacy_config(&config_path, &legacy);
+    // BLINKER_CONFIG_DIR runs (tests, side-by-side) never migrate the exe-dir config.
+    if !paths::config_dir_overridden() {
+        if let Some(legacy) = paths::legacy_config_path() {
+            config::migrate_legacy_config(&config_path, &legacy);
+        }
     }
 
     tauri::Builder::default()
@@ -77,6 +80,9 @@ pub fn run() {
             commands::find_blender,
             commands::set_ports,
             commands::alias_icon,
+            commands::is_dev,
+            commands::report_ready,
+            commands::probe_now,
         ])
         .run(tauri::generate_context!())
         .expect("error while running BlinkerUI");

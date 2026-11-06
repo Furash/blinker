@@ -160,8 +160,9 @@ pub fn find_alias_icon(dirs: &[PathBuf], alias: &str) -> Option<String> {
 
 fn icon_dirs(app: &AppHandle) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
-    if let Some(appdata) = std::env::var_os("APPDATA") {
-        dirs.push(PathBuf::from(appdata).join("BlinkerUI").join("icons"));
+    // %APPDATA%\BlinkerUI\icons (or BLINKER_CONFIG_DIR\icons): next to the config.
+    if let Some(cfg_dir) = crate::paths::config_path().parent() {
+        dirs.push(cfg_dir.join("icons"));
     }
     if let Some(exe_dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)) {
         dirs.push(exe_dir.join("icons"));
@@ -176,14 +177,24 @@ fn icon_dirs(app: &AppHandle) -> Vec<PathBuf> {
 // commands
 // ---------------------------------------------------------------------------
 
+/// Returns at once: `running` is empty. Probing here blocked startup for ~1 s (a
+/// connect to a closed localhost port waits for the full probe timeout on Windows);
+/// the UI calls `probe_now` once its listeners are in place, as Python polls right
+/// after the window is built (`QTimer.singleShot(0, self._poll_status)`).
 #[tauri::command]
 pub async fn get_state(state: State<'_, AppState>) -> Result<AppStateDto, String> {
     let cfg = lock(&state.config).clone();
-    let ports: Vec<u16> = cfg.folders.iter().map(|f| f.port).collect();
+    Ok(build_state(&cfg, &state.config_path, &BTreeMap::new()))
+}
+
+/// Probe the given ports now and emit the result as `blinker://status`.
+#[tauri::command]
+pub async fn probe_now(app: AppHandle, ports: Vec<u16>) -> Result<(), String> {
     let running = tauri::async_runtime::spawn_blocking(move || net::probe(&ports))
         .await
         .map_err(|e| e.to_string())?;
-    Ok(build_state(&cfg, &state.config_path, &running))
+    let payload: BTreeMap<String, bool> = running.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+    app.emit("blinker://status", payload).map_err(|e| e.to_string())
 }
 
 /// Entries the UI never sees (unparsable folders, wrongly typed values) are
@@ -384,6 +395,25 @@ pub async fn alias_icon(app: AppHandle, alias: String) -> Result<Option<String>,
     tauri::async_runtime::spawn_blocking(move || find_alias_icon(&dirs, &alias))
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Debug build? The UI keeps reload/devtools keys only in debug builds.
+#[tauri::command]
+pub fn is_dev() -> bool {
+    cfg!(debug_assertions)
+}
+
+/// The UI reports `performance.now()` at window show (`window.__blinker_ready_ms`).
+/// When `BLINKER_READY_LOG` names a file, one line `ready_ms=<ms>` is appended to it
+/// (startup measurement, tools/measure_startup.ps1); otherwise this does nothing.
+#[tauri::command]
+pub fn report_ready(ms: f64) {
+    if let Some(p) = std::env::var_os("BLINKER_READY_LOG").filter(|p| !p.is_empty()) {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
+            let _ = writeln!(f, "ready_ms={ms:.1}");
+        }
+    }
 }
 
 #[cfg(test)]
