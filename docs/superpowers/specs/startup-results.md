@@ -220,6 +220,14 @@ on restart).
 | Config migration from exe dir | verified by tests (Task 2/8); not run live (it would touch the real `%APPDATA%`) |
 | 100 % DPI look | verified in Task 9 (mock at 100 %); this task compared 150 % |
 
+## Fixed in the final fix wave
+
+- Config save failed ("Could not save config: Access is denied") while another process
+  held the config open without delete sharing (Python `open()`, editors, scanners):
+  reproduced live on the release exe by holding the file open for 300 ms during a
+  `save_config`; fixed in `e5cdaef` (rename retried up to 2 s; unit test). This is the
+  likely cause of 2 failed walk runs out of 7 before it (not proven per run).
+
 ## Findings not fixed
 
 - Kill exit line says `[blender exited code 1]` (Rust `TerminateProcess(.., 1)`); Qt's
