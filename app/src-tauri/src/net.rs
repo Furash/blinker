@@ -194,7 +194,11 @@ mod tests {
 
     #[test]
     fn probe_runs_in_parallel() {
-        let ports: Vec<u16> = (0..20).map(|_| closed_port()).collect();
+        // Distinct ports: a released ephemeral port can be handed out again, and the
+        // result map is keyed by port (the flake seen in Task 15).
+        let mut ports: Vec<u16> = (0..20).map(|_| closed_port()).collect();
+        ports.sort_unstable();
+        ports.dedup();
         let t = Instant::now();
         let r = probe(&ports);
         assert!(t.elapsed() < Duration::from_secs(3));
