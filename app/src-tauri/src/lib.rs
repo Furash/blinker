@@ -1,5 +1,6 @@
 mod config;
 mod paths;
+mod theme;
 
 pub fn run() {
     tauri::Builder::default()
