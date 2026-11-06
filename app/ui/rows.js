@@ -98,10 +98,12 @@ function setSpinDisabled(wrap, disabled) {
 }
 
 /** The nested btn_row layout (`FolderRow._build_buttons`). */
-function buttonRow(idx, running, aliases, icons, h) {
+function buttonRow(idx, running, launching, aliases, icons, h) {
   const btns = el("div", "btn-row");
   btns.append(
-    running ? button("Kill", () => h.kill(idx)) : button("Launch", () => h.launch(idx)),
+    // Launch stays disabled while its `launch` call is in flight (Python flips to Kill
+    // synchronously; here Kill arrives with the backend's status event).
+    running ? button("Kill", () => h.kill(idx)) : button("Launch", () => h.launch(idx), { disabled: launching }),
     button("Reload", () => h.reload(idx), { disabled: !running }),
     button("Restart", () => h.restart(idx), { disabled: !running }),
     button("Clear console", () => h.clear(idx)),
@@ -140,7 +142,7 @@ function favButton(idx, fav, h) {
  * port(idx, value), ai(idx, alias). `icons` maps alias -> data URI or null.
  */
 export function buildRow(folder, idx, ctx) {
-  const { selected, running, aliases, icons, h } = ctx;
+  const { selected, running, launching, aliases, icons, h } = ctx;
   const row = el("div", "row" + (selected ? " selected" : ""));
   row.dataset.idx = String(idx);
   // FolderRow.mousePressEvent: a press anywhere that no child widget takes selects.
@@ -154,7 +156,7 @@ export function buildRow(folder, idx, ctx) {
   const meta = el("span", "meta", metaText(folder));
   const portLbl = el("span", "meta port-label", "port");
   const spin = portSpin(folder.port, running, (v) => h.port(idx, v));
-  const btns = buttonRow(idx, running, aliases, icons, h);
+  const btns = buttonRow(idx, running, launching, aliases, icons, h);
 
   row.append(
     dot, path, meta, portLbl, spin, btns,
@@ -177,6 +179,7 @@ export function renderRows(listEl, state, h) {
     frag.append(buildRow(f, i, {
       selected: i === state.selected,
       running: !!state.running.get(f.port),
+      launching: state.launching.has(f.port),
       aliases: state.config.ai_aliases,
       icons: state.icons,
       h,
@@ -204,7 +207,7 @@ export function updateRow(listEl, state, i, h) {
   spin.dataset.port = String(f.port);
   if (document.activeElement !== input) input.value = String(f.port);
   setSpinDisabled(spin, running);
-  row.querySelector(".btn-row").replaceWith(buttonRow(i, running, state.config.ai_aliases, state.icons, h));
+  row.querySelector(".btn-row").replaceWith(buttonRow(i, running, state.launching.has(f.port), state.config.ai_aliases, state.icons, h));
   row.querySelector(".fav-btn").replaceWith(favButton(i, !!f.favourite, h));
 }
 

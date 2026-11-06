@@ -51,6 +51,7 @@ pub fn run() {
                 config: Mutex::new(cfg),
                 supervisor: Arc::new(blender::Supervisor::new(sink)),
                 ports: ports.clone(),
+                last_probe: Mutex::new(Default::default()),
             });
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.set_title(&format!("Blinker UI  v{}", env!("CARGO_PKG_VERSION")));

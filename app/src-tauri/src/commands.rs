@@ -20,6 +20,9 @@ pub struct AppState {
     pub config: Mutex<Config>,
     pub supervisor: Arc<Supervisor>,
     pub ports: Arc<Mutex<Vec<u16>>>,
+    /// Last TCP probe result per port (poller and `probe_now`). Its lock also
+    /// serialises `publish_status`, so status events leave in the order they were built.
+    pub last_probe: Mutex<BTreeMap<u16, bool>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -32,12 +35,45 @@ pub struct TauriSink {
 }
 
 impl OutputSink for TauriSink {
-    fn push(&self, port: u16, text: &str) {
-        let _ = self.app.emit("blinker://output", serde_json::json!({ "port": port, "text": text }));
+    fn push(&self, port: u16, text: &str, seq: u64) {
+        let _ = self.app.emit("blinker://output", serde_json::json!({ "port": port, "text": text, "seq": seq }));
     }
     fn exited(&self, port: u16, code: Option<i32>) {
         let _ = self.app.emit("blinker://exited", serde_json::json!({ "port": port, "code": code }));
+        // The supervisor already marked the port not alive: publish the new state.
+        publish_status(&self.app, None);
     }
+}
+
+// ---------------------------------------------------------------------------
+// status
+// ---------------------------------------------------------------------------
+
+/// `blinker://status` payload: for every listed port, running = a Blender answers the
+/// last probe OR this app supervises a live Blender on it (Python `_apply_statuses`:
+/// `statuses.get(port) or proc_alive`). The backend owns alive-ness, so the UI never
+/// has to infer it from the order of `launch` replies and `exited` events.
+pub fn status_payload(
+    ports: &[u16],
+    last_probe: &BTreeMap<u16, bool>,
+    alive: impl Fn(u16) -> bool,
+) -> BTreeMap<String, bool> {
+    ports
+        .iter()
+        .map(|&p| (p.to_string(), last_probe.get(&p).copied().unwrap_or(false) || alive(p)))
+        .collect()
+}
+
+/// Merge `probed` into the last probe and emit the full status for the current ports.
+pub fn publish_status(app: &AppHandle, probed: Option<BTreeMap<u16, bool>>) {
+    let Some(st) = app.try_state::<AppState>() else { return };
+    let mut last = lock(&st.last_probe);
+    if let Some(m) = probed {
+        last.extend(m);
+    }
+    let ports = lock(&st.ports).clone();
+    let payload = status_payload(&ports, &last, |p| st.supervisor.is_alive(p));
+    let _ = app.emit("blinker://status", payload);
 }
 
 // ---------------------------------------------------------------------------
@@ -187,14 +223,14 @@ pub async fn get_state(state: State<'_, AppState>) -> Result<AppStateDto, String
     Ok(build_state(&cfg, &state.config_path, &BTreeMap::new()))
 }
 
-/// Probe the given ports now and emit the result as `blinker://status`.
+/// Probe the given ports now and emit the full status (`publish_status`).
 #[tauri::command]
 pub async fn probe_now(app: AppHandle, ports: Vec<u16>) -> Result<(), String> {
     let running = tauri::async_runtime::spawn_blocking(move || net::probe(&ports))
         .await
         .map_err(|e| e.to_string())?;
-    let payload: BTreeMap<String, bool> = running.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
-    app.emit("blinker://status", payload).map_err(|e| e.to_string())
+    publish_status(&app, Some(running));
+    Ok(())
 }
 
 /// Entries the UI never sees (unparsable folders, wrongly typed values) are
@@ -251,6 +287,7 @@ pub async fn addon_kind_of(path: String) -> Result<Option<AddonKind>, String> {
 /// config copy, otherwise its next `save_config` overwrites it with the stale value.
 #[tauri::command]
 pub async fn launch(
+    app: AppHandle,
     state: State<'_, AppState>,
     folder: Folder,
     blender: Option<String>,
@@ -281,6 +318,8 @@ pub async fn launch(
         .await
         .map_err(|e| launch_err("spawn_failed", e.to_string()))?
         .map_err(|m| launch_err("spawn_failed", m))?;
+    // Kill/Reload/Restart flip on now, as Python sets running right after start().
+    publish_status(&app, None);
 
     // `_prompt_blender_path` persists a picked executable once it is accepted.
     if blender.as_deref() == Some(exe.as_str()) {
@@ -347,9 +386,18 @@ pub async fn clear_output(state: State<'_, AppState>, port: u16) -> Result<(), S
     Ok(())
 }
 
+#[derive(Debug, Serialize)]
+pub struct OutputSnapshot {
+    pub text: String,
+    /// Console sequence number of `text`; `blinker://output` events with a larger
+    /// `seq` are not in it.
+    pub seq: u64,
+}
+
 #[tauri::command]
-pub async fn get_output(state: State<'_, AppState>, port: u16) -> Result<String, String> {
-    Ok(state.supervisor.output(port))
+pub async fn get_output(state: State<'_, AppState>, port: u16) -> Result<OutputSnapshot, String> {
+    let (text, seq) = state.supervisor.output_with_seq(port);
+    Ok(OutputSnapshot { text, seq })
 }
 
 #[tauri::command]
@@ -469,6 +517,15 @@ mod tests {
         assert_eq!(s.config.folders[0].path, "b");
         assert_eq!(s.config.theme.get(key), Some(&Value::String("#000000".into())));
         assert_eq!(s.config.theme.len(), s.default_theme.len());
+    }
+
+    #[test]
+    fn status_payload_is_probe_or_alive_and_missing_probe_is_false() {
+        let probe = BTreeMap::from([(1u16, true), (2, false), (9, true)]);
+        let s = status_payload(&[1, 2, 3, 4], &probe, |p| p == 2 || p == 4);
+        let want: BTreeMap<String, bool> =
+            [("1", true), ("2", true), ("3", false), ("4", true)].iter().map(|(k, v)| (k.to_string(), *v)).collect();
+        assert_eq!(s, want); // port 9 is not listed any more: left out
     }
 
     #[test]

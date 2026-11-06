@@ -64,10 +64,18 @@ function emit(event, payload) {
   for (const cb of listeners.get(event) || []) cb({ event, payload });
 }
 
+// Per-port console sequence (bytes ever appended), as the backend stamps it.
+const seqs = new Map([...output].map(([p, t]) => [p, t.length]));
+
 function push(port, text) {
   output.set(port, (output.get(port) || "") + text);
-  emit("blinker://output", { port, text });
+  const seq = (seqs.get(port) || 0) + text.length;
+  seqs.set(port, seq);
+  emit("blinker://output", { port, text, seq });
 }
+
+const statusPayload = () => Object.fromEntries(config.folders.map((f) => [String(f.port), alive.has(f.port)]));
+const publishStatus = () => emit("blinker://status", statusPayload());
 
 const clone = (v) => JSON.parse(JSON.stringify(v));
 
@@ -76,7 +84,7 @@ const commands = {
     config: clone(config),
     config_path: "C:\\Users\\user\\AppData\\Roaming\\BlinkerUI\\blinker_ui_config.json",
     version: "0.1.0",
-    running: Object.fromEntries(config.folders.map((f) => [String(f.port), alive.has(f.port)])),
+    running: statusPayload(),
     default_theme: { ...TOKYO },
     presets: ["Tokyo Night (default)", "Frigus Nox", "Light"],
     color_keys: [],
@@ -88,6 +96,7 @@ const commands = {
     }
     alive.add(folder.port);
     push(folder.port, `$ blender.exe --python bootstrap.py\n  port:   ${folder.port}\n\n`);
+    publishStatus();
     return null;
   },
   reload: ({ port }) => { const l = "[reload] ok\n"; push(port, l); return l; },
@@ -96,12 +105,12 @@ const commands = {
     const l = "[kill] process killed\n";
     push(port, l);
     alive.delete(port);
-    setTimeout(() => { push(port, "\n[blender exited code 1]\n"); emit("blinker://exited", { port, code: 1 }); }, 50);
+    setTimeout(() => { push(port, "\n[blender exited code 1]\n"); emit("blinker://exited", { port, code: 1 }); publishStatus(); }, 50);
     return l;
   },
   terminate_process: ({ port }) => alive.delete(port),
   clear_output: ({ port }) => { output.delete(port); },
-  get_output: ({ port }) => output.get(port) || "",
+  get_output: ({ port }) => ({ text: output.get(port) || "", seq: seqs.get(port) || 0 }),
   open_ai: () => {},
   open_folder: () => {},
   set_ports: () => {},
@@ -112,9 +121,7 @@ const commands = {
   find_blender: () => null,
   is_dev: () => true,
   report_ready: () => {},
-  probe_now: () => {
-    setTimeout(() => emit("blinker://status", Object.fromEntries(config.folders.map((f) => [String(f.port), alive.has(f.port)]))), 0);
-  },
+  probe_now: () => { setTimeout(publishStatus, 0); },
 };
 
 export async function invoke(cmd, args = {}) {
@@ -129,6 +136,4 @@ export async function listen(event, cb) {
   return () => listeners.get(event).delete(cb);
 }
 
-setInterval(() => {
-  emit("blinker://status", Object.fromEntries(config.folders.map((f) => [String(f.port), alive.has(f.port)])));
-}, 2000);
+setInterval(publishStatus, 2000);

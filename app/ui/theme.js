@@ -1,6 +1,6 @@
 // Theme -> CSS custom properties named exactly like the theme keys (--window_bg, ...).
-// Font sizes stay unitless (Qt points); app.css multiplies them by 1pt, which is what
-// Qt does: 10pt = 13.33 CSS px at 96 DPI, scaled by the webview's device pixel ratio.
+// Font sizes stay unitless (Qt points); app.css turns them into round(pt * 4 / 3) px, as
+// Qt does (10pt -> 13px, not 13.33px), scaled by the webview's device pixel ratio.
 
 const FONT_KEYS = ["ui_font_family", "mono_font_family"];
 

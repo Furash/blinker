@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 const POLL_INTERVAL: Duration = Duration::from_millis(2000);
@@ -111,9 +111,7 @@ pub fn start_poller(app: AppHandle, ports: Arc<Mutex<Vec<u16>>>) {
     let stop = Arc::new(AtomicBool::new(false));
     std::thread::spawn(move || {
         poller_loop(ports, stop, POLL_INTERVAL, probe, move |m| {
-            let payload: BTreeMap<String, bool> =
-                m.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
-            let _ = app.emit("blinker://status", payload);
+            crate::commands::publish_status(&app, Some(m));
         });
     });
 }

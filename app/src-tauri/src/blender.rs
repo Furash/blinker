@@ -71,7 +71,10 @@ pub struct LaunchSpec {
 }
 
 pub trait OutputSink: Send + Sync {
-    fn push(&self, port: u16, text: &str);
+    /// `seq` is the port's console sequence number after `text` was appended (see
+    /// `History::total`): `Supervisor::output_with_seq` returns the same counter, so a
+    /// pushed text is in a snapshot exactly when its `seq` <= the snapshot's.
+    fn push(&self, port: u16, text: &str, seq: u64);
     fn exited(&self, port: u16, code: Option<i32>);
 }
 
@@ -96,13 +99,21 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// newline count + 1), capped at `HISTORY_MAX_LINES`.
 struct History {
     lines: VecDeque<String>,
+    /// Bytes ever appended to this port's console; never decreases (not even on clear).
+    total: u64,
 }
 
 impl History {
     fn new() -> Self {
-        History { lines: VecDeque::from([String::new()]) }
+        History { lines: VecDeque::from([String::new()]), total: 0 }
     }
-    fn append(&mut self, text: &str) {
+    /// Empty the console but keep the sequence counter monotonic.
+    fn clear(&mut self) {
+        self.lines = VecDeque::from([String::new()]);
+    }
+    /// Append and return the new sequence number.
+    fn append(&mut self, text: &str) -> u64 {
+        self.total += text.len() as u64;
         let mut parts = text.split('\n');
         if let Some(first) = parts.next() {
             if let Some(last) = self.lines.back_mut() {
@@ -115,6 +126,7 @@ impl History {
         while self.lines.len() > HISTORY_MAX_LINES {
             self.lines.pop_front();
         }
+        self.total
     }
     fn text(&self) -> String {
         let len = self.lines.iter().map(|l| l.len() + 1).sum();
@@ -220,10 +232,8 @@ impl Shared {
         if text.is_empty() {
             return;
         }
-        if let Some(slot) = lock(&self.state).slots.get_mut(&port) {
-            slot.history.append(text);
-        }
-        self.sink.push(port, text);
+        let seq = lock(&self.state).slots.entry(port).or_insert_with(Slot::new).history.append(text);
+        self.sink.push(port, text, seq);
     }
 }
 
@@ -313,7 +323,7 @@ impl Supervisor {
 
         // Port check, spawn and registration happen under one lock so that a concurrent
         // launch or shutdown can never miss (and orphan) the new process.
-        let (child, reader) = {
+        let (child, reader, seq) = {
             let mut st = lock(&self.shared.state);
             // The previous Blender on this port has exited but its `exited` event is
             // still being delivered: wait, so that event cannot follow our header.
@@ -335,13 +345,13 @@ impl Supervisor {
                 .map_err(|e| format!("Could not start Blender:\n{}\n{e}", spec.blender))?;
             let child: ChildRef = Arc::new(Mutex::new(child));
             let slot = st.slots.entry(port).or_insert_with(Slot::new);
-            slot.history.append(&header);
+            let seq = slot.history.append(&header);
             slot.alive = true;
             slot.stop_requested = false;
             slot.child = Some(child.clone());
-            (child, reader)
+            (child, reader, seq)
         };
-        self.shared.sink.push(port, &header);
+        self.shared.sink.push(port, &header, seq);
 
         let shared = self.shared.clone();
         let child2 = child.clone();
@@ -363,31 +373,40 @@ impl Supervisor {
     /// Returns false when nothing is supervised on `port` (the caller then falls back
     /// to the TCP `kill` command, as Python does).
     pub fn kill(&self, port: u16) -> bool {
-        let child = {
+        let (child, seq) = {
             let mut st = lock(&self.shared.state);
             match st.slots.get_mut(&port) {
                 Some(s) if s.alive => {
                     s.stop_requested = true;
-                    s.history.append(KILL_LINE);
-                    s.child.clone()
+                    let seq = s.history.append(KILL_LINE);
+                    (s.child.clone(), seq)
                 }
                 _ => return false,
             }
         };
-        self.shared.sink.push(port, KILL_LINE);
+        self.shared.sink.push(port, KILL_LINE, seq);
         if let Some(c) = child {
             let _ = lock(&c).kill();
         }
         true
     }
 
-    #[allow(dead_code)] // test/diagnostic helper
     pub fn is_alive(&self, port: u16) -> bool {
         lock(&self.shared.state).slots.get(&port).is_some_and(|s| s.alive)
     }
 
+    #[cfg(test)]
     pub fn output(&self, port: u16) -> String {
-        lock(&self.shared.state).slots.get(&port).map(|s| s.history.text()).unwrap_or_default()
+        self.output_with_seq(port).0
+    }
+
+    /// Console text plus its sequence number (pushes with a larger `seq` came later).
+    pub fn output_with_seq(&self, port: u16) -> (String, u64) {
+        lock(&self.shared.state)
+            .slots
+            .get(&port)
+            .map(|s| (s.history.text(), s.history.total))
+            .unwrap_or_default()
     }
 
     /// Append a line produced by the app (e.g. `[reload] ok`) to a port's console.
@@ -400,7 +419,7 @@ impl Supervisor {
 
     pub fn clear(&self, port: u16) {
         if let Some(s) = lock(&self.shared.state).slots.get_mut(&port) {
-            s.history = History::new();
+            s.history.clear();
         }
     }
 
@@ -625,7 +644,7 @@ fn emit_batch(shared: &Shared, port: u16, first: String, rx: &mpsc::Receiver<Str
 }
 
 enum Next {
-    Restart(ChildRef, PipeReader),
+    Restart(ChildRef, PipeReader, u64),
     Stop,
 }
 
@@ -697,22 +716,22 @@ fn monitor(
                         let _ = std::fs::remove_file(&marker);
                     }
                 }
-                slot.history.append(RESTARTING_LINE);
+                let seq_r = slot.history.append(RESTARTING_LINE);
                 match spawn(&plan, blend.as_deref()) {
                     Ok((c, r)) => {
                         let c: ChildRef = Arc::new(Mutex::new(c));
                         slot.child = Some(c.clone());
-                        Next::Restart(c, r)
+                        Next::Restart(c, r, seq_r)
                     }
                     Err(e) => {
                         let msg = format!("[could not restart blender: {e}]\n");
-                        slot.history.append(&msg);
+                        let seq_m = slot.history.append(&msg);
                         slot.alive = false;
                         slot.finishing = true;
                         slot.child = None;
                         drop(st);
-                        shared.sink.push(port, RESTARTING_LINE);
-                        shared.sink.push(port, &msg);
+                        shared.sink.push(port, RESTARTING_LINE, seq_r);
+                        shared.sink.push(port, &msg, seq_m);
                         deliver_exited(&shared, port, code);
                         return;
                     }
@@ -725,8 +744,8 @@ fn monitor(
             }
         };
         match next {
-            Next::Restart(c, r) => {
-                shared.sink.push(port, RESTARTING_LINE);
+            Next::Restart(c, r, seq_r) => {
+                shared.sink.push(port, RESTARTING_LINE, seq_r);
                 child = c;
                 reader = r;
             }
@@ -827,6 +846,8 @@ mod tests {
     #[derive(Default)]
     struct Rec {
         text: HashMap<u16, String>,
+        /// (port, seq, text) in push order
+        pushes: Vec<(u16, u64, String)>,
         exits: Vec<(u16, Option<i32>)>,
     }
 
@@ -837,8 +858,11 @@ mod tests {
     }
 
     impl OutputSink for RecSink {
-        fn push(&self, port: u16, text: &str) {
-            lock(&self.rec).text.entry(port).or_default().push_str(text);
+        fn push(&self, port: u16, text: &str, seq: u64) {
+            let mut r = lock(&self.rec);
+            r.text.entry(port).or_default().push_str(text);
+            r.pushes.push((port, seq, text.to_string()));
+            drop(r);
             self.cv.notify_all();
         }
         fn exited(&self, port: u16, code: Option<i32>) {
@@ -1212,7 +1236,7 @@ mod tests {
             release: Mutex<mpsc::Receiver<()>>,
         }
         impl OutputSink for Slow {
-            fn push(&self, _port: u16, text: &str) {
+            fn push(&self, _port: u16, text: &str, _seq: u64) {
                 lock(&self.events).push(format!("push:{text}"));
             }
             fn exited(&self, _port: u16, _code: Option<i32>) {
@@ -1282,6 +1306,60 @@ mod tests {
         assert!(!e.sup.is_alive(9010) && !e.sup.is_alive(9011));
     }
 
+    /// Rebuild the console from a snapshot plus the pushes whose seq is past it.
+    fn merge(snapshot: &(String, u64), pushes: &[(u16, u64, String)], port: u16) -> String {
+        let mut s = snapshot.0.clone();
+        for (_, _, t) in pushes.iter().filter(|(p, q, _)| *p == port && *q > snapshot.1) {
+            s.push_str(t);
+        }
+        s
+    }
+
+    #[test]
+    fn output_seq_is_monotonic_and_snapshot_plus_later_pushes_rebuilds_history() {
+        let e = env();
+        let p = 9020;
+        assert_eq!(e.sup.output_with_seq(p), (String::new(), 0));
+        e.sup.append(p, "a
+");
+        e.sup.append(p, "bc");
+        let snap = e.sup.output_with_seq(p);
+        assert_eq!(snap, ("a
+bc".to_string(), 4));
+        e.sup.append(p, "d
+");
+        e.sup.append(9021, "other port");
+        e.sup.append(p, "e");
+        let pushes = lock(&e.sink.rec).pushes.clone();
+        let seqs: Vec<u64> = pushes.iter().filter(|x| x.0 == p).map(|x| x.1).collect();
+        assert_eq!(seqs, vec![2, 4, 6, 7]);
+        assert_eq!(pushes.iter().find(|x| x.0 == 9021).unwrap().1, 10);
+        assert_eq!(merge(&snap, &pushes, p), e.sup.output(p));
+        // clear empties the text but never moves the counter back
+        e.sup.clear(p);
+        assert_eq!(e.sup.output_with_seq(p), (String::new(), 7));
+        e.sup.append(p, "x");
+        assert_eq!(e.sup.output_with_seq(p), ("x".to_string(), 8));
+        assert_eq!(lock(&e.sink.rec).pushes.last().unwrap().1, 8);
+    }
+
+    #[test]
+    fn output_seq_snapshot_mid_stream_rebuilds_process_output() {
+        let e = env();
+        let p = 9022;
+        e.sup.launch(e.cmd("seqflood", p, "for /L %i in (1,1,3000) do @echo line %i")).unwrap();
+        // snapshot while output is flowing
+        std::thread::sleep(Duration::from_millis(30));
+        let snap = e.sup.output_with_seq(p);
+        e.sink.wait_exits(1);
+        let pushes = lock(&e.sink.rec).pushes.clone();
+        let full = e.sup.output(p);
+        assert!(full.contains("line 3000"), "{}", &full[full.len().saturating_sub(200)..]);
+        assert_eq!(merge(&snap, &pushes, p), full);
+        let seqs: Vec<u64> = pushes.iter().filter(|x| x.0 == p).map(|x| x.1).collect();
+        assert!(seqs.windows(2).all(|w| w[0] < w[1]), "seq not increasing: {seqs:?}");
+    }
+
     #[test]
     fn history_capped_at_20000_lines() {
         let mut h = History::new();
@@ -1340,7 +1418,7 @@ mod tests {
             exited: Mutex<Option<mpsc::Sender<()>>>,
         }
         impl OutputSink for Blocking {
-            fn push(&self, _port: u16, text: &str) {
+            fn push(&self, _port: u16, text: &str, _seq: u64) {
                 if text.contains("flood") {
                     if let Some(tx) = lock(&self.entered).take() {
                         let _ = tx.send(());

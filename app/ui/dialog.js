@@ -36,8 +36,12 @@ function modal(title, text, buttons) {
     });
     const cancelValue = buttons[buttons.length - 1][1];
     function onKey(e) {
-      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(cancelValue); }
+      // only the top-most modal handles keys; listeners run oldest first
+      const overlays = document.querySelectorAll(".modal-overlay");
+      if (overlays[overlays.length - 1] !== overlay) return;
+      if (e.key === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); close(cancelValue); }
       else if (e.key === "Tab") {
+        e.stopImmediatePropagation();
         // keep focus inside the dialog
         e.preventDefault();
         const i = els.indexOf(document.activeElement);

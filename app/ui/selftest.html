@@ -10,7 +10,7 @@
 <script type="module">
 // Browser-run checks for the pure helpers (no Node). Open through a local static server.
 import { metaText, baseName, sortFavouritesFirst, parseAliases, capLines, parsePort,
-  selectionAfterRemove, nextPort } from "./logic.js";
+  selectionAfterRemove, nextPort, textAfterSnapshot, runningFromStatus, SaveQueue } from "./logic.js";
 import { OutputPane } from "./output.js";
 
 const out = document.getElementById("out");
@@ -81,6 +81,50 @@ check("pane trims across nodes", pane.text(), "partial\n6\n7");
 check("pane block count <= max", pane.text().split("\n").length <= 3, true);
 pane.clear();
 check("pane clear", pane.text(), "");
+
+// textAfterSnapshot: events racing get_output (seq = console sequence after the text)
+check("merge drops events in snapshot", textAfterSnapshot(10, [{ seq: 8, text: "a" }, { seq: 10, text: "b" }]), "");
+check("merge keeps later events in seq order",
+  textAfterSnapshot(10, [{ seq: 14, text: "cd" }, { seq: 9, text: "x" }, { seq: 12, text: "ab" }]), "abcd");
+{
+  // backend history "L1\nL2\n" (seq 6); "L3\n" lands before the snapshot, "L4\n" after
+  const events = [{ seq: 3, text: "L1\n" }, { seq: 6, text: "L2\n" }, { seq: 9, text: "L3\n" }, { seq: 12, text: "L4\n" }];
+  const snapshot = { text: "L1\nL2\nL3\n", seq: 9 };
+  check("snapshot + merge rebuilds history", snapshot.text + textAfterSnapshot(snapshot.seq, events), "L1\nL2\nL3\nL4\n");
+}
+
+// runningFromStatus: backend-owned running; missing port = false; order of exited vs
+// launch reply is irrelevant because only status snapshots change the state
+check("status missing port is false", [...runningFromStatus([1, 2, 3], { 1: true, 2: false })], [[1, true], [2, false], [3, false]]);
+{
+  // fast exit: status(alive) and status(exited) both arrive before the launch reply
+  let running = new Map();
+  for (const payload of [{ 9876: true }, { 9876: false }]) running = runningFromStatus([9876], payload);
+  const launchReplyArrives = () => {}; // the reply carries no running state
+  launchReplyArrives();
+  check("fast exit before launch reply ends stopped", running.get(9876), false);
+}
+
+// SaveQueue: one in flight, coalesced follow-up sends the state current at send time
+{
+  const sent = [];
+  let release;
+  let value = 1;
+  const q = new SaveQueue((v) => { sent.push(v); return new Promise((r) => { release = r; }); }, () => value);
+  const p1 = q.request();
+  value = 2; const p2 = q.request();
+  value = 3; const p3 = q.request();
+  check("save queue: one in flight", sent, [1]);
+  release(); await p1;
+  await Promise.resolve();
+  check("save queue: coalesced follow-up sends latest", sent, [1, 3]);
+  release(); await Promise.all([p2, p3]);
+  check("save queue: nothing extra", sent, [1, 3]);
+  let failed = 0;
+  const q2 = new SaveQueue(() => Promise.reject(new Error("x")), () => 0, () => failed++);
+  await q2.request();
+  check("save queue: error reported, queue continues", failed, 1);
+}
 
 const sum = document.createElement("div");
 sum.className = failed ? "fail" : "pass";

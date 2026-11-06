@@ -5,7 +5,9 @@ import { applyTheme, mergeTheme } from "./theme.js";
 import { renderRows, updateRow, markSelected } from "./rows.js";
 import { OutputPane } from "./output.js";
 import { message, confirm, notImplemented } from "./dialog.js";
-import { parseAliases, sortFavouritesFirst, selectionAfterRemove } from "./logic.js";
+import {
+  parseAliases, sortFavouritesFirst, selectionAfterRemove, textAfterSnapshot, runningFromStatus, SaveQueue,
+} from "./logic.js";
 
 const $ = (id) => document.getElementById(id);
 const listEl = $("list");
@@ -14,11 +16,15 @@ const pane = new OutputPane($("output"));
 const state = {
   config: null,
   selected: null,
-  running: new Map(), // port -> shown state (probe || supervised)
-  probe: new Map(), // port -> last TCP probe result
-  supervised: new Set(), // ports with a Blender launched by this app and not yet exited
+  // port -> running, exactly as the backend's last `blinker://status` said (probe OR a
+  // live supervised Blender). The UI never infers alive-ness itself.
+  running: new Map(),
+  launching: new Set(), // ports with a `launch` call in flight (Launch disabled)
   icons: new Map(), // lower-case alias -> data URI | null
-  loadingPort: null, // get_output in flight for this port
+  // Output of the selected port: `load` buffers events while get_output is in flight;
+  // `shownSeq` is the console sequence the pane holds (events at or below it are dupes).
+  load: null, // { port, buffer: [{ seq, text }] }
+  shownSeq: 0,
 };
 
 const errText = (e) => (e && typeof e === "object" ? e.message ?? JSON.stringify(e) : String(e));
@@ -26,28 +32,32 @@ const folders = () => state.config.folders;
 
 // ---------- persistence ----------
 
-async function save() {
-  try {
-    await invoke("save_config", { config: state.config });
-  } catch (e) {
-    await message("Save", errText(e));
-  }
-}
+// One save in flight at a time; later requests coalesce and send the config as it is
+// when that save starts (blender_path included, see launch()).
+const saves = new SaveQueue(
+  (config) => invoke("save_config", { config }),
+  () => JSON.parse(JSON.stringify(state.config)),
+  (e) => message("Save", errText(e)),
+);
+const save = () => saves.request();
 
 function syncPorts() {
-  invoke("set_ports", { ports: folders().map((f) => f.port) }).catch(() => {});
+  return invoke("set_ports", { ports: folders().map((f) => f.port) }).catch(() => {});
+}
+
+/** Ask the backend for a fresh status of every folder port (`_poll_status`). */
+async function pollNow() {
+  await syncPorts();
+  invoke("probe_now", { ports: folders().map((f) => f.port) }).catch(() => {});
 }
 
 // ---------- running state ----------
 
-function computeRunning(port) {
-  return !!state.probe.get(port) || state.supervised.has(port);
-}
-
-/** `_apply_statuses`: update rows whose running state changed. */
-function refreshRunning() {
+/** `_apply_statuses` for a full status payload: update rows whose state changed. */
+function applyStatus(payload) {
+  const next = runningFromStatus(folders().map((f) => f.port), payload);
   folders().forEach((f, i) => {
-    const r = computeRunning(f.port);
+    const r = next.get(f.port);
     if (r !== !!state.running.get(f.port)) {
       state.running.set(f.port, r);
       updateRow(listEl, state, i, handlers);
@@ -58,7 +68,6 @@ function refreshRunning() {
 // ---------- rendering ----------
 
 function refreshRows() {
-  for (const f of folders()) state.running.set(f.port, computeRunning(f.port));
   renderRows(listEl, state, handlers);
   renderOutput();
 }
@@ -70,58 +79,81 @@ function select(idx) {
   renderOutput();
 }
 
+const selectedPort = () => {
+  const f = state.selected === null ? null : folders()[state.selected];
+  return f ? f.port : null;
+};
+
 /** `_render_output`. */
 async function renderOutput() {
   const label = $("out-label");
   const f = state.selected === null ? null : folders()[state.selected];
   if (!f) {
     label.textContent = "(no folder selected)";
-    state.loadingPort = null;
+    state.load = null;
     pane.setText("");
     return;
   }
   label.textContent = `${f.path}   ·   port ${f.port}`;
   const port = f.port;
-  state.loadingPort = port;
-  let text = "";
+  const load = { port, buffer: [] };
+  state.load = load;
+  let snap = { text: "", seq: 0 };
   try {
-    text = await invoke("get_output", { port });
+    snap = await invoke("get_output", { port });
   } catch {
-    text = "";
+    /* empty console */
   }
-  const cur = state.selected === null ? null : folders()[state.selected];
-  if (state.loadingPort !== port || !cur || cur.port !== port) return; // superseded
-  state.loadingPort = null;
-  pane.setText(text);
+  if (state.load !== load || selectedPort() !== port) return; // superseded
+  state.load = null;
+  pane.setText(snap.text);
+  // events that raced the snapshot: keep only those past it
+  pane.append(textAfterSnapshot(snap.seq, load.buffer));
+  state.shownSeq = Math.max(snap.seq, ...load.buffer.map((e) => e.seq));
 }
 
-function appendOutput(port, text) {
-  const f = state.selected === null ? null : folders()[state.selected];
-  // while get_output is in flight its snapshot already holds this text
-  if (f && f.port === port && state.loadingPort !== port) pane.append(text);
+function appendOutput(port, text, seq) {
+  if (selectedPort() !== port) return;
+  if (state.load && state.load.port === port) {
+    state.load.buffer.push({ seq, text });
+    return;
+  }
+  if (seq <= state.shownSeq) return;
+  state.shownSeq = seq;
+  pane.append(text);
 }
 
 // ---------- folder actions ----------
 
 async function launch(idx, blender = null) {
   const f = folders()[idx];
-  if (!f) return;
+  if (!f || state.launching.has(f.port)) return;
+  const port = f.port;
+  const redraw = () => {
+    const i = folders().indexOf(f);
+    if (i >= 0) updateRow(listEl, state, i, handlers);
+  };
+  state.launching.add(port);
+  redraw();
+  let retry = null;
   try {
     const persisted = await invoke("launch", { folder: f, blender });
     // The backend saved a user-picked Blender path: keep the local copy in step, or
-    // the next save_config would overwrite it.
+    // the next save_config would overwrite it. (Running state arrives as a status event.)
     if (persisted) state.config.blender_path = persisted;
-    state.supervised.add(f.port);
-    refreshRunning();
   } catch (e) {
+    state.launching.delete(port);
+    redraw();
     if (e && e.kind === "blender_not_found") {
       if (!(await confirm("Blender not found", e.message))) return;
-      const picked = await pickFile({ title: "Locate Blender executable", defaultPath: state.config.blender_path });
-      if (picked) await launch(idx, picked);
-      return;
+      retry = await pickFile({ title: "Locate Blender executable", defaultPath: state.config.blender_path });
+    } else {
+      await message("Launch", errText(e));
     }
-    await message("Launch", errText(e));
+  } finally {
+    if (state.launching.delete(port)) redraw();
   }
+  if (retry && folders().includes(f)) await launch(folders().indexOf(f), retry);
 }
 
 async function tcpAction(cmd, idx) {
@@ -162,16 +194,16 @@ async function openAi(idx, ai) {
   }
 }
 
-/** `_change_port`. */
+/** `_change_port`: running is unknown on the new port until the poll it triggers. */
 function changePort(idx, port) {
   const f = folders()[idx];
   if (!f || f.port === port) return;
   f.port = port;
+  state.running.set(port, false);
   save();
-  syncPorts();
-  state.running.set(port, computeRunning(port)); // unknown until the next poll
   updateRow(listEl, state, idx, handlers);
   if (idx === state.selected) renderOutput();
+  pollNow();
 }
 
 /** `_toggle_fav`. */
@@ -194,9 +226,8 @@ async function removeFolder(idx) {
   if (!(await confirm("Remove", `Remove this folder from the list?\n\n${f.path}`))) return;
   const i = folders().indexOf(f);
   if (i < 0) return;
-  if (state.running.get(f.port) || state.supervised.has(f.port)) {
-    invoke("terminate_process", { port: f.port }).catch(() => {});
-  }
+  // a no-op (false) when this app supervises nothing on the port
+  invoke("terminate_process", { port: f.port }).catch(() => {});
   folders().splice(i, 1);
   state.selected = selectionAfterRemove(state.selected, folders().length);
   save();
@@ -304,7 +335,7 @@ async function main() {
   applyTheme(mergeTheme(st.default_theme, st.config.theme));
   state.config.theme = mergeTheme(st.default_theme, st.config.theme);
   $("config-label").textContent = `Config: ${st.config_path}`;
-  for (const [p, r] of Object.entries(st.running || {})) state.probe.set(Number(p), !!r);
+  state.running = runningFromStatus(folders().map((f) => f.port), st.running || {});
   state.selected = folders().length ? 0 : null;
   if (mockScenario && mockScenario.selected !== null && mockScenario.selected < folders().length) {
     state.selected = mockScenario.selected;
@@ -313,20 +344,14 @@ async function main() {
   await Promise.all([loadIcons(state.config.ai_aliases), document.fonts.ready]);
   refreshRows();
   setupSplitter();
-  syncPorts();
+  await syncPorts();
 
   await Promise.all([
-    listen("blinker://output", ({ payload }) => appendOutput(payload.port, payload.text)),
-    listen("blinker://status", ({ payload }) => {
-      for (const [p, r] of Object.entries(payload)) state.probe.set(Number(p), !!r);
-      refreshRunning();
-    }),
-    listen("blinker://exited", ({ payload }) => {
-      // The backend already appended "[blender exited code N]"; a Blender not started by
-      // this app may still answer on the port, so fall back to the last probe.
-      state.supervised.delete(payload.port);
-      refreshRunning();
-    }),
+    listen("blinker://output", ({ payload }) => appendOutput(payload.port, payload.text, payload.seq)),
+    // A full snapshot (probe OR live supervised Blender). The backend republishes it
+    // after a launch and after every exit, so `blinker://exited` needs no handling here
+    // (its console line is appended by the backend).
+    listen("blinker://status", ({ payload }) => applyStatus(payload)),
     listen("blinker://terminal-error", ({ payload }) => message("Terminal failed", payload.message)),
   ]);
   // First status poll, now that the status listener is registered (get_state does not probe).

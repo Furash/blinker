@@ -66,3 +66,61 @@ export function nextPort(folders) {
   while (used.has(p)) p++;
   return p;
 }
+
+/**
+ * Output events that arrived while `get_output` was in flight, reduced to the text
+ * that is not in the snapshot: events whose `seq` is past the snapshot's, in seq order.
+ * (The backend stamps each event with the console sequence after that text.)
+ */
+export function textAfterSnapshot(snapshotSeq, buffered) {
+  return buffered
+    .filter((e) => e.seq > snapshotSeq)
+    .sort((a, b) => a.seq - b.seq)
+    .map((e) => e.text)
+    .join("");
+}
+
+/** Running state per folder port from a full `blinker://status` payload; missing = false. */
+export function runningFromStatus(ports, payload) {
+  return new Map(ports.map((p) => [p, payload[String(p)] === true]));
+}
+
+/**
+ * Serialises saves: at most one in flight; requests made meanwhile coalesce into one
+ * follow-up save, which sends `current()` as it is when that save starts (never an
+ * older snapshot). `send(value)` returns a promise. The promise from `request()`
+ * resolves once a save that started after the request has finished.
+ */
+export class SaveQueue {
+  constructor(send, current, onError = () => {}) {
+    this.send = send;
+    this.current = current;
+    this.onError = onError;
+    this.busy = false;
+    this.dirty = false;
+    this.waiters = [];
+  }
+
+  request() {
+    this.dirty = true;
+    const done = new Promise((r) => this.waiters.push(r));
+    if (!this.busy) this._pump();
+    return done;
+  }
+
+  async _pump() {
+    this.busy = true;
+    while (this.dirty) {
+      this.dirty = false;
+      const waiters = this.waiters;
+      this.waiters = [];
+      try {
+        await this.send(this.current());
+      } catch (e) {
+        this.onError(e);
+      }
+      for (const r of waiters) r();
+    }
+    this.busy = false;
+  }
+}
