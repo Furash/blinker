@@ -109,19 +109,26 @@ pub fn open_ai(template: &str, path: &str, ai: &str) -> Result<(), TerminalError
     Ok(())
 }
 
+/// The folder argument for explorer.exe (quoted by the caller, by hand: Rust's escaping of
+/// a trailing backslash confuses Explorer). Config paths use forward slashes (Qt file
+/// dialogs, e.g. `D:/git/addon`), and Explorer opens Documents instead of a path written
+/// with `/`, so separators become `\`. A drive root becomes `D:\.`.
+fn explorer_arg(path: &str) -> String {
+    let path = path.replace('/', "\\");
+    let trimmed = path.trim_end_matches('\\');
+    if trimmed.is_empty() || trimmed.ends_with(':') {
+        format!("{trimmed}\\.") // drive root
+    } else {
+        trimmed.to_string()
+    }
+}
+
 fn open_folder_with(program: &str, path: &str) -> Result<(), String> {
     if !std::path::Path::new(path).is_dir() {
         return Err(format!("Path not found: {path}"));
     }
-    // Quote by hand: Rust's escaping of a trailing backslash confuses Explorer.
-    let trimmed = path.trim_end_matches(['\\', '/']);
-    let arg = if trimmed.is_empty() || trimmed.ends_with(':') {
-        format!("{trimmed}\\.") // drive root
-    } else {
-        trimmed.to_string()
-    };
     let mut child = Command::new(program)
-        .raw_arg(format!("\"{arg}\""))
+        .raw_arg(format!("\"{}\"", explorer_arg(path)))
         .spawn()
         .map_err(|e| e.to_string())?;
     // Explorer exits 1 even on success: never inspect the code, just reap.
@@ -153,6 +160,16 @@ mod tests {
             expand_template("start \"\" /D \"{path}\" cmd /K \"{cmd}\"", "D:\\проект x", "codex"),
             "start \"\" /D \"D:\\проект x\" cmd /K \"codex\""
         );
+    }
+
+    #[test]
+    fn explorer_arg_uses_backslashes_and_handles_drive_roots() {
+        assert_eq!(explorer_arg("D:/git/Blender_CCP_Tools"), "D:\\git\\Blender_CCP_Tools");
+        assert_eq!(explorer_arg("D:/git/addon/"), "D:\\git\\addon");
+        assert_eq!(explorer_arg("C:\\a b\\c\\"), "C:\\a b\\c");
+        assert_eq!(explorer_arg("D:/"), "D:\\.");
+        assert_eq!(explorer_arg("D:"), "D:\\.");
+        assert_eq!(explorer_arg("//server/share/dir"), "\\\\server\\share\\dir");
     }
 
     #[test]
