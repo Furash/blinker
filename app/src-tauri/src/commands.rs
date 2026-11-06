@@ -186,18 +186,30 @@ pub async fn get_state(state: State<'_, AppState>) -> Result<AppStateDto, String
     Ok(build_state(&cfg, &state.config_path, &running))
 }
 
+/// Entries the UI never sees (unparsable folders, wrongly typed values) are
+/// `serde(skip)` fields: carry them over from the managed config.
+pub fn merge_for_save(incoming: Config, current: &Config) -> Config {
+    let mut cfg = incoming;
+    cfg.unparsed_folders = current.unparsed_folders.clone();
+    cfg.invalid = current.invalid.clone();
+    cfg
+}
+
+/// The single write path for the shared config. The caller holds the config mutex
+/// (`slot` is the guarded value), so no two writers can interleave on the `.tmp` file.
+fn commit_config(path: &Path, slot: &mut Config, new: Config) -> std::io::Result<()> {
+    let r = config::save(path, &new);
+    if r.is_ok() {
+        *slot = new;
+    }
+    r
+}
+
 #[tauri::command]
 pub async fn save_config(state: State<'_, AppState>, config: Config) -> Result<(), String> {
-    let mut cfg = config;
-    {
-        // Entries the UI never saw (unparsable folders, wrongly typed values) survive.
-        let cur = lock(&state.config);
-        cfg.unparsed_folders = cur.unparsed_folders.clone();
-        cfg.invalid = cur.invalid.clone();
-    }
-    config::save(&state.config_path, &cfg).map_err(|e| format!("Could not save config: {e}"))?;
-    *lock(&state.config) = cfg;
-    Ok(())
+    let mut slot = lock(&state.config);
+    let cfg = merge_for_save(config, &slot);
+    commit_config(&state.config_path, &mut slot, cfg).map_err(|e| format!("Could not save config: {e}"))
 }
 
 #[derive(Debug, Serialize)]
@@ -223,12 +235,15 @@ pub async fn addon_kind_of(path: String) -> Result<Option<AddonKind>, String> {
     Ok(addons::addon_kind(Path::new(&path)))
 }
 
+/// Returns `Some(path)` when this call newly persisted a Blender executable to the
+/// config (the user-picked `blender` argument). The UI MUST store it in its local
+/// config copy, otherwise its next `save_config` overwrites it with the stale value.
 #[tauri::command]
 pub async fn launch(
     state: State<'_, AppState>,
     folder: Folder,
     blender: Option<String>,
-) -> Result<(), LaunchError> {
+) -> Result<Option<String>, LaunchError> {
     validate_folder(&folder.path)?;
     let bootstrap = blender::write_bootstrap()
         .map_err(|e| launch_err("spawn_failed", format!("bootstrap.py not found at:\n{e}")))?;
@@ -242,6 +257,7 @@ pub async fn launch(
             "Could not locate Blender automatically.\n\nPick the Blender executable now?".into(),
         )
     })?;
+    let port = folder.port;
     let spec = LaunchSpec {
         blender: exe.clone(),
         bootstrap,
@@ -257,13 +273,24 @@ pub async fn launch(
 
     // `_prompt_blender_path` persists a picked executable once it is accepted.
     if blender.as_deref() == Some(exe.as_str()) {
-        let mut cfg = lock(&state.config);
-        if cfg.blender_path != exe {
-            cfg.blender_path = exe;
-            let _ = config::save(&state.config_path, &cfg);
+        let mut slot = lock(&state.config);
+        if slot.blender_path != exe {
+            let mut new = slot.clone();
+            new.blender_path = exe.clone();
+            if let Err(e) = commit_config(&state.config_path, &mut slot, new.clone()) {
+                // Keep it for this session and make the failure visible in the console.
+                *slot = new;
+                drop(slot);
+                state.supervisor.append(
+                    port,
+                    &format!("[config] could not save blender path: {e}
+"),
+                );
+            }
+            return Ok(Some(exe));
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 async fn tcp_line(state: &State<'_, AppState>, port: u16, cmd: &'static str) -> Result<String, String> {
@@ -338,7 +365,11 @@ pub async fn open_folder(path: String) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn find_blender() -> Result<Option<String>, String> {
-    Ok(blender::find_blender(std::env::var("BLENDER_PATH").ok().as_deref()))
+    tauri::async_runtime::spawn_blocking(|| {
+        blender::find_blender(std::env::var("BLENDER_PATH").ok().as_deref())
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -349,7 +380,10 @@ pub async fn set_ports(state: State<'_, AppState>, ports: Vec<u16>) -> Result<()
 
 #[tauri::command]
 pub async fn alias_icon(app: AppHandle, alias: String) -> Result<Option<String>, String> {
-    Ok(find_alias_icon(&icon_dirs(&app), &alias))
+    let dirs = icon_dirs(&app);
+    tauri::async_runtime::spawn_blocking(move || find_alias_icon(&dirs, &alias))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -518,5 +552,70 @@ mod tests {
         fs::write(t.path().join("codex.svg"), b"<svg/>").unwrap();
         let dirs = [t.path().to_path_buf()];
         assert!(find_alias_icon(&dirs, "  CoDeX ").is_some());
+    }
+
+    #[test]
+    fn merge_for_save_preserves_unparsed_invalid_and_unknown_through_ui_roundtrip() {
+        let t = tempfile::tempdir().unwrap();
+        let src = t.path().join("in.json");
+        fs::write(
+            &src,
+            r#"{"folders":[{"path":"a","port":9876},{"path":"bad","port":"x"}],
+                "terminal":5,"mystery":{"k":1}}"#,
+        )
+        .unwrap();
+        let loaded = config::load(&src);
+        assert_eq!(loaded.unparsed_folders.len(), 1);
+        // as get_state hands it to the UI and the UI returns it
+        let dto = build_state(&loaded, &src, &BTreeMap::new());
+        let json = serde_json::to_string(&dto.config).unwrap();
+        let incoming: Config = serde_json::from_str(&json).unwrap();
+        assert!(incoming.unparsed_folders.is_empty() && incoming.invalid.is_empty());
+        let merged = merge_for_save(incoming, &loaded);
+        let out = t.path().join("out.json");
+        config::save(&out, &merged).unwrap();
+        let back = config::load(&out);
+        assert_eq!(back.unparsed_folders.len(), 1);
+        assert_eq!(back.unparsed_folders[0]["path"], "bad");
+        assert_eq!(back.invalid.get("terminal"), Some(&serde_json::json!(5)));
+        assert_eq!(back.extra.get("mystery"), Some(&serde_json::json!({"k":1})));
+        assert_eq!(back.folders.len(), 1);
+    }
+
+    #[test]
+    fn merge_for_save_edited_folders_replace_but_unparsed_kept_once() {
+        let mut current = Config::default();
+        current.folders = vec![Folder { path: "old".into(), ..Folder::default() }];
+        current.unparsed_folders = vec![serde_json::json!({"path": 1})];
+        let mut incoming = Config::default();
+        incoming.folders = vec![
+            Folder { path: "n1".into(), ..Folder::default() },
+            Folder { path: "n2".into(), ..Folder::default() },
+        ];
+        let m = merge_for_save(incoming, &current);
+        assert_eq!(m.folders.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), ["n1", "n2"]);
+        let t = tempfile::tempdir().unwrap();
+        let p = t.path().join("c.json");
+        config::save(&p, &m).unwrap();
+        let back = config::load(&p);
+        assert_eq!(back.folders.len(), 2);
+        assert_eq!(back.unparsed_folders.len(), 1);
+    }
+
+    #[test]
+    fn commit_config_replaces_slot_only_on_success() {
+        let t = tempfile::tempdir().unwrap();
+        let mut slot = Config::default();
+        let mut new = Config::default();
+        new.blender_path = "b".into();
+        commit_config(&t.path().join("c.json"), &mut slot, new.clone()).unwrap();
+        assert_eq!(slot.blender_path, "b");
+        // a directory in place of the file makes the rename fail
+        let bad = t.path().join("dir");
+        fs::create_dir(&bad).unwrap();
+        let mut other = Config::default();
+        other.blender_path = "z".into();
+        assert!(commit_config(&bad, &mut slot, other).is_err());
+        assert_eq!(slot.blender_path, "b");
     }
 }
