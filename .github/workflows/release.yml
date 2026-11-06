@@ -1,3 +1,19 @@
+# Release build for the Tauri app (app/). Tag `v*` (or manual run with a tag) ->
+# BlinkerUI-<tag>.zip (+ .sha256) published as a GitHub release.
+#
+# The old Python/PyInstaller build (blinker_ui.py, BlinkerUI.spec, build_exe.cmd)
+# was replaced by this workflow; the previous release.yml is in git history
+# (`git log -- .github/workflows/release.yml`, then `git show <sha>:.github/workflows/release.yml`).
+#
+# Updater compatibility: the asset names and zip layout (one top-level folder
+# BlinkerUI/) must not change, old installs update with the old PowerShell updater.
+#
+# PRE-RELEASE: old installs query `releases/latest`, which skips pre-releases, so the
+# first Tauri releases are published as pre-releases (default below). To promote one,
+# edit the release on GitHub and untick "Set as a pre-release" (tick "Set as the latest
+# release"), or `gh release edit <tag> --prerelease=false --latest`. To publish a normal
+# release straight away: flip PRERELEASE_DEFAULT below to 'false' (tag pushes) or run
+# the workflow manually with the `prerelease` input unticked.
 name: Release
 
 on:
@@ -9,9 +25,17 @@ on:
       tag:
         description: 'Tag to release (e.g. v0.1.0)'
         required: true
+      prerelease:
+        description: 'Publish as pre-release'
+        type: boolean
+        default: true
 
 permissions:
   contents: write
+
+env:
+  PRERELEASE_DEFAULT: 'true'   # used for tag pushes (no inputs there)
+  TAURI_CLI_VERSION: '2.12.4'  # same as the local `cargo tauri --version`
 
 jobs:
   build-windows:
@@ -20,62 +44,99 @@ jobs:
       - name: Resolve tag
         id: resolve
         shell: pwsh
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_PRERELEASE: ${{ inputs.prerelease }}
         run: |
-          $tag = if ("${{ github.event_name }}" -eq "workflow_dispatch") { "${{ inputs.tag }}" } else { "${{ github.ref_name }}" }
-          if ($tag -notmatch '^v\d+\.\d+\.\d+([-+].+)?$') {
+          $tag = if ($env:EVENT -eq "workflow_dispatch") { $env:INPUT_TAG } else { $env:REF_NAME }
+          if ($tag -notmatch '^v\d+\.\d+\.\d+([-+][0-9A-Za-z.+-]+)?$') {
             Write-Error "Tag '$tag' must match v<MAJOR>.<MINOR>.<PATCH> (e.g. v0.1.1)"
             exit 1
           }
           $version = $tag.Substring(1)
+          $pre = if ($env:EVENT -eq "workflow_dispatch") { $env:INPUT_PRERELEASE } else { $env:PRERELEASE_DEFAULT }
+          $pre = if ("$pre".ToLower() -eq 'false') { 'false' } else { 'true' }
           "tag=$tag"         | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
           "version=$version" | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
+          "prerelease=$pre"  | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
 
       - uses: actions/checkout@v4
         with:
           ref: ${{ steps.resolve.outputs.tag }}
+          # nothing pushes from this job; the token is used only by the release step
+          persist-credentials: false
 
-      - uses: actions/setup-python@v5
+      # rustup is preinstalled on the runner; app/rust-toolchain.toml pins
+      # stable-x86_64-pc-windows-msvc, so this action (stable) and the pin agree.
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
         with:
-          python-version: '3.11'
+          workspaces: app/src-tauri
 
-      - name: Install dependencies
+      # tauri-cli is compiled once and cached under its own dir (rust-cache does not
+      # keep ~/.cargo/bin); the key includes the pinned version.
+      - name: Cache tauri-cli
+        id: tauri-cli-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}\tauri-cli
+          key: tauri-cli-${{ runner.os }}-${{ env.TAURI_CLI_VERSION }}
+
+      - name: Install tauri-cli
+        if: steps.tauri-cli-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: cargo install tauri-cli --version "$env:TAURI_CLI_VERSION" --locked --root "$env:RUNNER_TEMP\tauri-cli"
+
+      - name: Put tauri-cli on PATH
+        shell: pwsh
         run: |
-          python -m pip install --upgrade pip
-          pip install pyinstaller PySide6
+          "$env:RUNNER_TEMP\tauri-cli\bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
 
       - name: Stamp version from tag
         shell: pwsh
-        run: |
-          $version = "${{ steps.resolve.outputs.version }}"
-          $path = "blinker_ui.py"
-          $py = Get-Content $path -Raw
-          $new = [regex]::Replace($py, '(?m)^__version__\s*=\s*"[^"]*"', "__version__ = `"$version`"")
-          if ($new -eq $py) {
-            Write-Error "Failed to stamp __version__ in $path (pattern not found)"
-            exit 1
-          }
-          Set-Content -Path $path -Value $new -NoNewline -Encoding utf8
+        env:
+          VERSION: ${{ steps.resolve.outputs.version }}
+        run: ./app/stamp-version.ps1 -Version $env:VERSION
 
-      - name: Build with PyInstaller (downloads UPX, force-compresses CFG DLLs)
-        shell: cmd
-        run: build_exe.cmd
+      - name: Rust tests
+        shell: pwsh
+        working-directory: app/src-tauri
+        run: cargo test --locked
+
+      - name: Build (cargo tauri build --no-bundle)
+        shell: pwsh
+        working-directory: app
+        run: cargo tauri build --no-bundle -- --locked
 
       - name: Package zip + SHA256
         shell: pwsh
+        env:
+          TAG: ${{ steps.resolve.outputs.tag }}
         run: |
-          $tag = "${{ steps.resolve.outputs.tag }}"
-          $zip = "BlinkerUI-$tag.zip"
-          Compress-Archive -Path dist/BlinkerUI -DestinationPath $zip
-          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
-          $hash | Out-File -Encoding ascii -NoNewline "$zip.sha256"
-          "ZIP_PATH=$zip"        | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
-          "SHA_PATH=$zip.sha256" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          ./app/package.ps1 -Tag $env:TAG -OutDir dist
+          "ZIP_PATH=dist/BlinkerUI-$($env:TAG).zip"        | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          "SHA_PATH=dist/BlinkerUI-$($env:TAG).zip.sha256" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.resolve.outputs.tag }}
+          prerelease: ${{ steps.resolve.outputs.prerelease == 'true' }}
           files: |
             ${{ env.ZIP_PATH }}
             ${{ env.SHA_PATH }}
           generate_release_notes: true
+          # Prepended to the generated notes (softprops: body + generate_release_notes).
+          body: |
+            **Upgrading from the Python version (v0.1.x):** the in-app Update button of the
+            old app replaces its install folder and deletes the old one, including
+            `blinker_ui_config.json`, before the new app can copy it. Before updating,
+            either copy `blinker_ui_config.json` from the install folder to
+            `%APPDATA%\BlinkerUI\`, or download this zip and extract it over the old
+            install folder by hand (the new app then copies the config to
+            `%APPDATA%\BlinkerUI` on first start). Later updates keep the config, since it
+            now lives in `%APPDATA%\BlinkerUI`.
+

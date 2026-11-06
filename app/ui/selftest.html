@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Blinker UI selftest</title>
+<style>body { font: 13px "Cascadia Mono", monospace; background: #16181d; color: #d4d4d4; } .fail { color: #f7768e; } .pass { color: #9ece6a; }</style>
+</head>
+<body>
+<pre id="out"></pre>
+<script type="module">
+// Browser-run checks for the pure helpers (no Node). Open through a local static server.
+import { metaText, baseName, sortFavouritesFirst, parseAliases, capLines, parsePort,
+  selectionAfterRemove, nextPort, textAfterSnapshot, runningFromStatus, SaveQueue, ConsoleFeed,
+  pathKey, addonLabel, scanItems, checkedAddons, setAllChecked, appendFolders, editResult, spinValue, blendStart,
+  parseSpin, commitSettings, importNotes, completeFrom } from "./logic.js";
+import { invoke, isMock } from "./api.js";
+import { OutputPane } from "./output.js";
+
+const out = document.getElementById("out");
+let failed = 0;
+function check(name, got, want) {
+  const ok = JSON.stringify(got) === JSON.stringify(want);
+  if (!ok) failed++;
+  const line = document.createElement("div");
+  line.className = ok ? "pass" : "fail";
+  line.textContent = `${ok ? "PASS" : "FAIL"} ${name}${ok ? "" : `: got ${JSON.stringify(got)} want ${JSON.stringify(want)}`}`;
+  out.append(line);
+}
+
+// metaText (_meta_text)
+check("meta empty", metaText({ module: "", repo: "blinker", blend: "" }), "");
+check("meta all", metaText({ module: "m", repo: "user_default", blend: "D:\\s\\a.blend" }),
+  "module=m   ·   repo=user_default   ·   blend=a.blend");
+check("meta repo blinker hidden", metaText({ module: "m", repo: "blinker", blend: "" }), "module=m");
+check("meta empty repo hidden", metaText({ module: "", repo: "", blend: "x/y.blend" }), "blend=y.blend");
+check("basename posix", baseName("D:/scenes/t.blend"), "t.blend");
+check("basename trailing sep", baseName("D:/scenes/"), "scenes");
+
+// sortFavouritesFirst (_toggle_fav / _sort_folders): stable
+const fs = [{ p: "a" }, { p: "b", favourite: true }, { p: "c" }, { p: "d", favourite: true }];
+check("fav sort stable", sortFavouritesFirst(fs).map((f) => f.p), ["b", "d", "a", "c"]);
+check("fav sort no favs", sortFavouritesFirst([{ p: "x" }, { p: "y" }]).map((f) => f.p), ["x", "y"]);
+check("fav sort does not mutate", fs.map((f) => f.p), ["a", "b", "c", "d"]);
+
+check("aliases", parseAliases(" claude, ,codex ,"), ["claude", "codex"]);
+check("aliases empty", parseAliases(""), []);
+
+// capLines (maximumBlockCount)
+check("cap under", capLines("a\nb\n", 5), "a\nb\n");
+check("cap exact blocks", capLines("a\nb\nc", 3), "a\nb\nc");
+check("cap trims front", capLines("a\nb\nc\nd", 2), "c\nd");
+check("cap trailing newline counts a block", capLines("a\nb\nc\n", 2), "c\n");
+
+check("port ok", parsePort("9876"), 9876);
+check("port low", parsePort("1023"), null);
+check("port high", parsePort("65536"), null);
+check("port junk", parsePort("98a"), null);
+check("port edges", [parsePort("1024"), parsePort("65535")], [1024, 65535]);
+
+check("sel after remove keeps", selectionAfterRemove(0, 2), 0);
+check("sel after remove clamps", selectionAfterRemove(2, 2), 1);
+check("sel after remove empty", selectionAfterRemove(0, 0), null);
+check("sel none", selectionAfterRemove(null, 3), null);
+
+check("next port", nextPort([{ port: 9876 }, { port: 9878 }]), 9877);
+
+// OutputPane line cap, incremental appends
+const host = document.createElement("div");
+document.body.append(host);
+const pane = new OutputPane(host, 3);
+pane.setText("1\n2\n3\n4\n");
+check("pane setText capped", pane.text(), "3\n4\n");
+pane.append("5\n");
+pane.flush();
+check("pane append capped", pane.text(), "4\n5\n");
+pane.append("par");
+pane.flush();
+pane.append("tial\n6");
+pane.flush();
+check("pane partial line kept whole", pane.text(), "5\npartial\n6");
+pane.append("\n7");
+pane.flush();
+check("pane trims across nodes", pane.text(), "partial\n6\n7");
+check("pane block count <= max", pane.text().split("\n").length <= 3, true);
+pane.clear();
+check("pane clear", pane.text(), "");
+
+// textAfterSnapshot: events racing get_output (seq = console sequence after the text)
+check("merge drops events in snapshot", textAfterSnapshot(10, [{ seq: 8, text: "a" }, { seq: 10, text: "b" }]), "");
+check("merge keeps later events in seq order",
+  textAfterSnapshot(10, [{ seq: 14, text: "cd" }, { seq: 9, text: "x" }, { seq: 12, text: "ab" }]), "abcd");
+{
+  // backend history "L1\nL2\n" (seq 6); "L3\n" lands before the snapshot, "L4\n" after
+  const events = [{ seq: 3, text: "L1\n" }, { seq: 6, text: "L2\n" }, { seq: 9, text: "L3\n" }, { seq: 12, text: "L4\n" }];
+  const snapshot = { text: "L1\nL2\nL3\n", seq: 9 };
+  check("snapshot + merge rebuilds history", snapshot.text + textAfterSnapshot(snapshot.seq, events), "L1\nL2\nL3\nL4\n");
+}
+
+// runningFromStatus: backend-owned running; missing port = false; order of exited vs
+// launch reply is irrelevant because only status snapshots change the state
+check("status missing port is false", [...runningFromStatus([1, 2, 3], { 1: true, 2: false })], [[1, true], [2, false], [3, false]]);
+{
+  // fast exit: status(alive) and status(exited) both arrive before the launch reply
+  let running = new Map();
+  for (const payload of [{ 9876: true }, { 9876: false }]) running = runningFromStatus([9876], payload);
+  const launchReplyArrives = () => {}; // the reply carries no running state
+  launchReplyArrives();
+  check("fast exit before launch reply ends stopped", running.get(9876), false);
+}
+
+// SaveQueue: one in flight, coalesced follow-up sends the state current at send time
+{
+  const sent = [];
+  let release;
+  let value = 1;
+  const q = new SaveQueue((v) => { sent.push(v); return new Promise((r) => { release = r; }); }, () => value);
+  const p1 = q.request();
+  value = 2; const p2 = q.request();
+  value = 3; const p3 = q.request();
+  check("save queue: one in flight", sent, [1]);
+  release(); await p1;
+  await Promise.resolve();
+  check("save queue: coalesced follow-up sends latest", sent, [1, 3]);
+  release(); await Promise.all([p2, p3]);
+  check("save queue: nothing extra", sent, [1, 3]);
+  let failed = 0;
+  const q2 = new SaveQueue(() => Promise.reject(new Error("x")), () => 0, () => failed++);
+  await q2.request();
+  check("save queue: error reported, queue continues", failed, 1);
+}
+
+// ConsoleFeed: threshold per snapshot/clear, never "max seq seen"
+{
+  const feed = new ConsoleFeed();
+  feed.begin();
+  check("feed buffers during load", feed.event(5, "early"), "");
+  check("feed end returns buffered past snapshot", feed.end(3), "early");
+  // out-of-order arrival from concurrent emitters: k (seq 20) before m (seq 12)
+  const shown = [feed.event(20, "KILL"), feed.event(12, "BIG CHUNK")].join("|");
+  check("feed keeps out-of-order events (k before m)", shown, "KILL|BIG CHUNK");
+  check("feed drops events already in snapshot", feed.event(3, "dupe"), "");
+}
+{
+  // clear: stragglers from before the clear stay hidden, newer events show
+  const feed = new ConsoleFeed();
+  feed.end(10);
+  feed.begin(); // clear in flight
+  feed.event(9, "pre-clear straggler");
+  feed.event(14, "after");
+  check("clear keeps only events past the clear seq", feed.end(11), "after");
+  check("clear: later straggler dropped", feed.event(11, "old"), "");
+  check("clear: later new event shown", feed.event(15, "new"), "new");
+}
+
+// Task 10: add / scan / edit (pure parts)
+check("next port skips used and fills gaps", nextPort([{ port: 9876 }, { port: 9877 }, { port: 9879 }]), 9878);
+check("next port empty", nextPort([]), 9876);
+{
+  const fl = [{ path: "D:/a", port: 9876 }];
+  const sel = appendFolders(fl, ["D:\\b", "D:\\c"]);
+  check("append: ports from _next_port in turn", fl.map((f) => f.port), [9876, 9877, 9878]);
+  check("append: selects last added", sel, 2);
+  check("append: Folder defaults", fl[1], { path: "D:\\b", port: 9877, repo: "blinker", module: "", blend: "", favourite: false });
+  check("append nothing", appendFolders(fl, []), null);
+}
+check("pathKey separators/case/trailing", pathKey("D:/Git/Addons/"), pathKey("d:\\git\\addons"));
+check("pathKey dots", pathKey("D:\\git\\x\\..\\addons\\.\\a"), "d:\\git\\addons\\a");
+check("pathKey drive root", pathKey("D:/"), "d:\\");
+check("pathKey .. stops at drive", pathKey("D:\\..\\a"), "d:\\a");
+check("pathKey UNC", pathKey("//srv/share/x"), "\\\\srv\\share\\x");
+check("addon label extension", addonLabel("extension", "D:\\a"), "[extension]  D:\\a");
+check("addon label legacy padded", addonLabel("legacy", "D:\\a"), "[legacy   ]  D:\\a");
+check("addon label already", addonLabel("legacy", "D:\\a", true), "[legacy   ]  D:\\a    (already added)");
+{
+  const found = [{ path: "D:\\x\\one", kind: "extension" }, { path: "D:\\x\\two", kind: "legacy" }, { path: "D:\\x\\three", kind: "extension" }];
+  const items = scanItems(found, [{ path: "d:/X/Two/" }]);
+  check("scan: already added disabled+unchecked", items.map((i) => [i.enabled, i.checked]), [[true, true], [false, false], [true, true]]);
+  check("scan: already label", items[1].label, "[legacy   ]  D:\\x\\two    (already added)");
+  setAllChecked(items, false);
+  check("scan: select none", items.map((i) => i.checked), [false, false, false]);
+  setAllChecked(items, true);
+  check("scan: select all skips disabled", items.map((i) => i.checked), [true, false, true]);
+  items[0].checked = false;
+  check("scan: result = checked, in order", checkedAddons(items), [{ path: "D:\\x\\three", kind: "extension" }]);
+  setAllChecked(items, false);
+  check("scan: none checked -> empty result", checkedAddons(items), []);
+}
+check("edit accept strips, repo default", editResult({ path: "  D:/p  ", port: 9000, repo: "  ", module: " m ", blend: " b.blend " }),
+  { path: "D:/p", port: 9000, repo: "blinker", module: "m", blend: "b.blend" });
+check("edit accept keeps repo", editResult({ path: "p", port: 1, repo: "user_default", module: "", blend: "" }).repo, "user_default");
+check("spin value typed", spinValue("12345", 9876), 12345);
+check("spin value intermediate keeps last", spinValue("12", 9876), 9876);
+check("spin value out of range keeps last", spinValue("70000", 9876), 9876);
+check("blend start: blend, path, empty", [blendStart("b", "p"), blendStart("", "p"), blendStart("", "")], ["b", "p", ""]);
+
+// Task 11: Settings (pure parts)
+check("parseSpin range", [parseSpin("7", 7, 24), parseSpin("24", 7, 24), parseSpin("6", 7, 24), parseSpin("25", 7, 24), parseSpin("1a", 7, 24)], [7, 24, null, null, null]);
+check("parsePort still 5 digits", [parsePort("009876"), parsePort("9876")], [null, 9876]);
+{
+  const defaults = { theme: { ui_font_family: "Segoe UI", mono_font_family: "Cascadia Mono" }, terminal: "wt T" };
+  const r = commitSettings({ accent_fg: "#123456", ui_font_family: "old" },
+    { uiFamily: "", uiSize: 12, monoFamily: "Consolas", monoSize: 9, terminal: "   ", aiAliases: " claude, x ", blenderPath: "  C:/b.exe " }, defaults);
+  check("commit inputs: blank family -> default, sizes, strip, blank terminal -> default", r, {
+    theme: { accent_fg: "#123456", ui_font_family: "Segoe UI", ui_font_size: 12, mono_font_family: "Consolas", mono_font_size: 9 },
+    terminal: "wt T", ai_aliases: "claude, x", blender_path: "C:/b.exe" });
+  check("commit inputs: terminal kept stripped", commitSettings({}, { uiFamily: "a", uiSize: 7, monoFamily: "b", monoSize: 7, terminal: " t ", aiAliases: "", blenderPath: "" }, defaults).terminal, "t");
+}
+check("import notes none", importNotes([], []), null);
+check("import notes both", importNotes(["a", "b"], ["window_bg"]), "Ignored unknown keys: a, b\nInvalid values for: window_bg");
+check("import notes invalid only", importNotes([], ["x"]), "Invalid values for: x");
+check("inline completion case-insensitive, first match", completeFrom(["Arial", "Cascadia Code", "Cascadia Mono", "Consolas"], "cas"), "Cascadia Code");
+check("inline completion none", [completeFrom(["Arial"], "z"), completeFrom(["Arial"], "")], [null, null]);
+
+// Task 11: the backend's theme helpers through invoke (the real Rust commands when this
+// page runs in the app's webview, the mock otherwise). Expected values: Python's
+// SettingsDialog._normalize_hex / _detect_preset.
+{
+  const HEX = [["#ABC", "#aabbcc"], ["abc", "#aabbcc"], ["  #1E1F22 ", "#1e1f22"], ["1e1f22", "#1e1f22"], ["##abc", "#aabbcc"],
+    ["abcd", null], ["ggg", null], ["", null], ["#12345", null], ["#1234567", null], [" #aBc ", "#aabbcc"], ["#a b", null],
+    ["fff", "#ffffff"], ["#FFFFFF", "#ffffff"], ["12345g", null], ["#\u0661\u0662\u0663", null], ["\tabc\n", "#aabbcc"],
+    ["#\uff41\uff42\uff43", null]];
+  const got = await Promise.all(HEX.map(([s]) => invoke("normalize_hex", { s })));
+  HEX.forEach(([s, want], i) => check(`normalize_hex ${JSON.stringify(s)} (${isMock ? "mock" : "rust"})`, got[i], want));
+  const st = await invoke("get_state");
+  for (const [i, name] of st.presets.entries()) {
+    check(`detect_preset ${name}`, await invoke("detect_preset", { theme: st.preset_themes[i] }), name);
+  }
+  const custom = { ...st.preset_themes[2], accent_fg: "#000000" };
+  check("detect_preset modified -> Custom", await invoke("detect_preset", { theme: custom }), "Custom");
+  check("detect_preset fonts ignored", await invoke("detect_preset", { theme: { ...st.preset_themes[1], ui_font_size: 20 } }), "Frigus Nox");
+  check("detect_preset empty -> Custom", await invoke("detect_preset", { theme: {} }), "Custom");
+}
+
+const sum = document.createElement("div");
+sum.className = failed ? "fail" : "pass";
+sum.textContent = failed ? `${failed} FAILED` : "ALL PASS";
+out.prepend(sum);
+document.title = failed ? "FAIL" : "PASS";
+</script>
+</body>
+</html>

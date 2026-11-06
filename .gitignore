@@ -215,3 +215,7 @@ tools/upx/
 
 # Claude Code
 .claude/
+
+# Tauri build output
+app/src-tauri/target/
+app/src-tauri/gen/
