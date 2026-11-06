@@ -6,7 +6,7 @@ platform has no font database), DPI-unaware so 1 logical px = 1 image px, with a
 throw-away config in a temp dir. It never starts Blender, probes ports, or writes the
 real config.
 
-    python -I tools/grab_reference.py <out_dir>
+    python -I tools/grab_reference.py <out_dir> [variant-name-prefix]
 
 Runs one child process per variant (QT_SCALE_FACTOR must be set before QApplication).
 """
@@ -60,7 +60,44 @@ VARIANTS = {
     "frigus_wide_100": ("Frigus Nox", "1", "state", 1700),
     "light_wide_100": ("Light", "1", "state", 1700),
     "tokyo_wide_150": ("Tokyo Night (default)", "1.5", "state", 1700),
+    # Dialogs (Task 10): the dialog's client area only (no native title bar), over the
+    # main window's stylesheet. Width is unused.
+    "dlg_scan_tokyo_100": ("Tokyo Night (default)", "1", "dlg_scan", 1100),
+    "dlg_scan_light_100": ("Light", "1", "dlg_scan", 1100),
+    "dlg_edit_tokyo_100": ("Tokyo Night (default)", "1", "dlg_edit", 1100),
+    "dlg_edit_light_100": ("Light", "1", "dlg_edit", 1100),
+    "dlg_noaddons_tokyo_100": ("Tokyo Night (default)", "1", "dlg_noaddons", 1100),
+    "dlg_noaddons_light_100": ("Light", "1", "dlg_noaddons", 1100),
 }
+
+# Scan dialog content (mock.js uses the same): root, then (path, kind) as find_addons
+# returns them; ccp_exporter is already in FOLDERS.
+SCAN_ROOT = r"D:\git\blender_addons"
+SCAN_FOUND = [
+    (r"D:\git\blender_addons\asset_tools", "extension"),
+    (r"D:\git\blender_addons\ccp_exporter", "extension"),
+    (r"D:\git\blender_addons\legacy\mesh_cleanup", "legacy"),
+    (r"D:\git\blender_addons\quick_tools_v2", "extension"),
+    (r"D:\git\blender_addons\uv_helpers", "legacy"),
+]
+
+
+def build_dialog(b, w, kind: str):
+    """The dialog for a `dlg_*` state, built exactly as MainWindow builds it."""
+    from pathlib import Path as P
+
+    from PySide6.QtWidgets import QMessageBox
+
+    if kind == "dlg_scan":
+        existing = {str(P(f.path).resolve()) for f in w.folders}
+        found = [(P(p), k) for p, k in SCAN_FOUND]
+        return b.ScanAddonsDialog(w, P(SCAN_ROOT), found, existing)
+    if kind == "dlg_edit":
+        return b.EditFolderDialog(w.folders[1], w)
+    # QMessageBox.information(self, "No addons", ...) without exec()
+    return QMessageBox(QMessageBox.Icon.Information, "No addons",
+                       f"No Blender addons or extensions found under:\n{P(SCAN_ROOT)}",
+                       QMessageBox.StandardButton.Ok, w)
 
 
 def render(out: Path, preset: str, state: str, width: int) -> None:
@@ -104,8 +141,16 @@ def render(out: Path, preset: str, state: str, width: int) -> None:
             w.folders[1].output = [SAMPLE_OUTPUT]
             w._select(1)
 
+    dlg = None
+    if state.startswith("dlg_"):
+        dlg = build_dialog(b, w, state)
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+        dlg.show()
+
     def grab() -> None:
-        w.grab().save(str(out))
+        (dlg or w).grab().save(str(out))
+        if dlg is not None:
+            dlg.close()
         w.close()
         app.quit()
 
@@ -120,8 +165,11 @@ def main() -> None:
         render(Path(sys.argv[2]), sys.argv[3], sys.argv[4], int(sys.argv[5]))
         return
     out_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else REPO / ".superpowers" / "ref"
+    only = sys.argv[2] if len(sys.argv) > 2 else ""  # optional variant name prefix
     out_dir.mkdir(parents=True, exist_ok=True)
     for name, (preset, scale, state, width) in VARIANTS.items():
+        if not name.startswith(only):
+            continue
         env = dict(os.environ, QT_QPA_PLATFORM="windows:dpiawareness=0", QT_SCALE_FACTOR=scale)
         out = out_dir / f"ref_{name}.png"
         subprocess.run([sys.executable, "-I", __file__, "--child", str(out), preset, state, str(width)],
