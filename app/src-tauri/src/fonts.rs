@@ -11,18 +11,32 @@ pub fn clean_families(names: Vec<String>) -> Vec<String> {
     v
 }
 
+/// LOGFONT face names stop at 31 characters ("Segoe UI Variable Display Semib"); the
+/// full name (64 characters) then carries the whole family name when it extends it.
+pub fn untruncated(face: String, full: String) -> String {
+    if face.chars().count() >= 31 && full.starts_with(&face) && full.len() > face.len() {
+        full
+    } else {
+        face
+    }
+}
+
 #[cfg(windows)]
 pub fn families() -> Vec<String> {
     use windows_sys::Win32::Foundation::LPARAM;
     use windows_sys::Win32::Graphics::Gdi::{
-        EnumFontFamiliesExW, GetDC, ReleaseDC, DEFAULT_CHARSET, LOGFONTW, TEXTMETRICW,
+        EnumFontFamiliesExW, GetDC, ReleaseDC, DEFAULT_CHARSET, ENUMLOGFONTEXW, LOGFONTW, TEXTMETRICW,
     };
 
+    fn wstr(s: &[u16]) -> String {
+        String::from_utf16_lossy(&s[..s.iter().position(|&c| c == 0).unwrap_or(s.len())])
+    }
+
     unsafe extern "system" fn cb(lf: *const LOGFONTW, _tm: *const TEXTMETRICW, _ty: u32, out: LPARAM) -> i32 {
-        // SAFETY: GDI passes a valid LOGFONTW; `out` is the Vec below, alive for the call.
-        let (lf, out) = unsafe { (&*lf, &mut *(out as *mut Vec<String>)) };
-        let len = lf.lfFaceName.iter().position(|&c| c == 0).unwrap_or(lf.lfFaceName.len());
-        out.push(String::from_utf16_lossy(&lf.lfFaceName[..len]));
+        // SAFETY: EnumFontFamiliesExW passes an ENUMLOGFONTEXW (which starts with the
+        // LOGFONTW); `out` is the Vec below, alive for the call.
+        let (elf, out) = unsafe { (&*(lf as *const ENUMLOGFONTEXW), &mut *(out as *mut Vec<String>)) };
+        out.push(untruncated(wstr(&elf.elfLogFont.lfFaceName), wstr(&elf.elfFullName)));
         1
     }
 
@@ -56,6 +70,15 @@ mod tests {
             clean_families(v.iter().map(|s| s.to_string()).collect()),
             ["8514oem", "amiri", "AR PL UKai", "Arial", "Segoe UI"]
         );
+    }
+
+    #[test]
+    fn untruncated_uses_full_name_only_for_cut_face_names() {
+        let cut = "Segoe UI Variable Display Semib".to_string();
+        assert_eq!(cut.len(), 31);
+        assert_eq!(untruncated(cut.clone(), "Segoe UI Variable Display Semibold".into()), "Segoe UI Variable Display Semibold");
+        assert_eq!(untruncated(cut.clone(), "Other".into()), cut);
+        assert_eq!(untruncated("Arial".into(), "Arial Bold".into()), "Arial");
     }
 
     #[cfg(windows)]

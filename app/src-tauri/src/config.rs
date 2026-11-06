@@ -5,7 +5,7 @@ use std::path::Path;
 
 pub const DEFAULT_PORT: u16 = 9876;
 pub const DEFAULT_REPO: &str = "blinker";
-const DEFAULT_AI_ALIASES: &str = "claude, codex";
+pub const DEFAULT_AI_ALIASES: &str = "claude, codex";
 
 fn default_port() -> u16 { DEFAULT_PORT }
 fn default_repo() -> String { DEFAULT_REPO.to_string() }

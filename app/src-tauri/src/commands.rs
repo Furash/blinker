@@ -155,7 +155,12 @@ pub struct AppStateDto {
     pub running: BTreeMap<String, bool>,
     pub default_theme: Map<String, Value>,
     pub presets: Vec<String>,
+    /// The preset themes, in `presets` order (the Settings preset combo).
+    pub preset_themes: Vec<Map<String, Value>>,
     pub color_keys: Vec<[String; 2]>,
+    /// DEFAULT_TERMINAL / DEFAULT_AI_ALIASES (Settings: Restore Defaults, hint text).
+    pub default_terminal: String,
+    pub default_ai_aliases: String,
 }
 
 /// Pure core of `get_state` (MainWindow.__init__ 1042-1065): favourites first,
@@ -172,7 +177,10 @@ pub fn build_state(cfg: &Config, config_path: &Path, running: &BTreeMap<u16, boo
         running: running.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
         default_theme: theme::preset(theme::PRESET_NAMES[0]).unwrap_or_default(),
         presets: theme::PRESET_NAMES.iter().map(|s| s.to_string()).collect(),
+        preset_themes: theme::PRESET_NAMES.iter().filter_map(|n| theme::preset(n)).collect(),
         color_keys: theme::COLOR_KEYS.iter().map(|(k, l)| [k.to_string(), l.to_string()]).collect(),
+        default_terminal: config::default_terminal(),
+        default_ai_aliases: config::DEFAULT_AI_ALIASES.to_string(),
     }
 }
 
@@ -605,6 +613,10 @@ mod tests {
         assert_eq!(s.default_theme, theme::preset("Tokyo Night (default)").unwrap());
         assert_eq!(s.presets, vec!["Tokyo Night (default)", "Frigus Nox", "Light"]);
         assert_eq!(s.color_keys.len(), 18);
+        assert_eq!(s.preset_themes.len(), 3);
+        assert_eq!(s.preset_themes[1], theme::preset("Frigus Nox").unwrap());
+        assert_eq!(s.default_terminal, config::default_terminal());
+        assert_eq!(s.default_ai_aliases, "claude, codex");
         assert_eq!(s.running.get("9876"), Some(&true));
         assert_eq!(s.version, env!("CARGO_PKG_VERSION"));
         assert_eq!(s.config_path, p.to_string_lossy());
