@@ -68,7 +68,16 @@ VARIANTS = {
     "dlg_edit_light_100": ("Light", "1", "dlg_edit", 1100),
     "dlg_noaddons_tokyo_100": ("Tokyo Night (default)", "1", "dlg_noaddons", 1100),
     "dlg_noaddons_light_100": ("Light", "1", "dlg_noaddons", 1100),
+    # Settings dialog (Task 11), one capture per tab.
+    "dlg_settings_terminal_tokyo_100": ("Tokyo Night (default)", "1", "dlg_settings_terminal", 1100),
+    "dlg_settings_terminal_light_100": ("Light", "1", "dlg_settings_terminal", 1100),
+    "dlg_settings_fonts_tokyo_100": ("Tokyo Night (default)", "1", "dlg_settings_fonts", 1100),
+    "dlg_settings_fonts_light_100": ("Light", "1", "dlg_settings_fonts", 1100),
+    "dlg_settings_colors_tokyo_100": ("Tokyo Night (default)", "1", "dlg_settings_colors", 1100),
+    "dlg_settings_colors_light_100": ("Light", "1", "dlg_settings_colors", 1100),
 }
+
+SETTINGS_TABS = {"dlg_settings_terminal": 0, "dlg_settings_fonts": 1, "dlg_settings_colors": 2}
 
 # Scan dialog content (mock.js uses the same): root, then (path, kind) as find_addons
 # returns them; ccp_exporter is already in FOLDERS.
@@ -86,8 +95,13 @@ def build_dialog(b, w, kind: str):
     """The dialog for a `dlg_*` state, built exactly as MainWindow builds it."""
     from pathlib import Path as P
 
-    from PySide6.QtWidgets import QMessageBox
+    from PySide6.QtWidgets import QMessageBox, QTabWidget
 
+    if kind in SETTINGS_TABS:
+        # MainWindow._open_settings, without exec()
+        dlg = b.SettingsDialog(w, w.theme, w.terminal, w.ai_aliases, w.blender_path)
+        dlg.findChild(QTabWidget).setCurrentIndex(SETTINGS_TABS[kind])
+        return dlg
     if kind == "dlg_scan":
         existing = {str(P(f.path).resolve()) for f in w.folders}
         found = [(P(p), k) for p, k in SCAN_FOUND]
