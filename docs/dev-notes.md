@@ -5,7 +5,7 @@
 | Variable | Effect |
 |---|---|
 | `BLINKER_CONFIG_DIR` | The app reads and writes `<dir>\blinker_ui_config.json` (and looks for custom icons in `<dir>\icons`) instead of `%APPDATA%\BlinkerUI`. The legacy exe-dir config is not migrated. Use a temp dir for tests and manual runs so the real config is never touched. |
-| `BLINKER_READY_LOG` | When the window is shown, the UI appends `ready_ms=<ms>` (`performance.now()` at show, from navigation start) to this file. `tools/measure_startup.ps1` sets it and prints the value per run. |
+| `BLINKER_READY_LOG` | When the window is shown, the UI appends `ready_ms=<ms> timeline=<json>` to this file: `performance.now()` at show (from navigation start), then the startup steps as `[name, ms since process creation]` pairs in time order (`run` = Rust `run()`, `nav_start` = webview navigation start, `setup` = Tauri setup hook (window and WebView2 created), `page_started`, `js_start`, `dom_content_loaded`, `page_finished`, `get_state`, `icons_fonts`, `rendered`, `show_raf` or `show_timeout`, `shown`). `tools/measure_startup.ps1` sets it and prints the line per run. |
 | `BLENDER_PATH` | Extra candidate for Blender auto-discovery (as in the Python UI). |
 | `BLINKER_UPDATE_API` | **Debug builds only** (ignored by release builds, `#[cfg(debug_assertions)]`). Replaces the release URL `https://api.github.com/repos/Furash/blinker/releases/latest` used by Check for updates. While it is set, release and asset URLs may also be `http://127.0.0.1[:port]/...` (a local test server); otherwise only `https://` URLs are fetched. Without it a debug build answers "Running from source" like the unfrozen Python app. |
 

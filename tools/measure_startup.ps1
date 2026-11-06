@@ -3,8 +3,9 @@ param(
     [int]$Runs = 3
 )
 # Prints ms from process start to a visible main window, one line per run, then the median.
-# For the Tauri build it also sets BLINKER_READY_LOG and prints the UI's ready_ms
-# (performance.now() when the window was shown, counted from navigation start).
+# For the Tauri build it also sets BLINKER_READY_LOG and prints the UI's ready line:
+# ready_ms (performance.now() when the window was shown, counted from navigation start)
+# and the startup timeline (steps in ms since process creation, docs/dev-notes.md).
 # Set BLINKER_CONFIG_DIR beforehand to keep the runs away from the real config.
 $Exe = (Resolve-Path $Exe).Path
 if (-not ('W.U' -as [type])) {

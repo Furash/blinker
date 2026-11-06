@@ -3,8 +3,8 @@
 //! Developer environment variables (see also docs/dev-notes.md):
 //! - `BLINKER_CONFIG_DIR`: use `<dir>\blinker_ui_config.json` (and `<dir>\icons`) instead
 //!   of `%APPDATA%\BlinkerUI`; the exe-dir legacy config is then not migrated.
-//! - `BLINKER_READY_LOG`: file the UI's `report_ready` appends `ready_ms=<ms>` to when the
-//!   window is shown (commands.rs; used by tools/measure_startup.ps1).
+//! - `BLINKER_READY_LOG`: file the UI's `report_ready` appends `ready_ms=<ms> timeline=<json>`
+//!   to when the window is shown (commands.rs; used by tools/measure_startup.ps1).
 
 use std::ffi::OsString;
 use std::path::PathBuf;

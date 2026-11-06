@@ -13,6 +13,10 @@ import {
   appendFolders,
 } from "./logic.js";
 
+// Startup steps (epoch ms) for the BLINKER_READY_LOG timeline (report_ready).
+const marks = { js_start: performance.timeOrigin + performance.now() };
+const mark = (k) => { marks[k] = performance.timeOrigin + performance.now(); };
+
 const $ = (id) => document.getElementById(id);
 const listEl = $("list");
 const pane = new OutputPane($("output"));
@@ -495,6 +499,7 @@ async function loadIcons(aliases) {
 
 async function main() {
   const [st, dev] = await Promise.all([invoke("get_state"), isDev()]);
+  mark("get_state");
   state.config = st.config;
   applyTheme(mergeTheme(st.default_theme, st.config.theme));
   state.config.theme = mergeTheme(st.default_theme, st.config.theme);
@@ -511,8 +516,10 @@ async function main() {
   }
   disableWebIsms(dev);
   await Promise.all([loadIcons(state.config.ai_aliases), document.fonts.ready]);
+  mark("icons_fonts");
   refreshRows();
   setupSplitter();
+  mark("rendered");
   await syncPorts();
 
   await Promise.all([
@@ -534,9 +541,11 @@ async function main() {
   // A hidden WebView2 may throttle rAF, so a short timeout backs it up.
   const painted = new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r("raf"))));
   window.__blinker_show_trigger = await Promise.race([painted, new Promise((r) => setTimeout(() => r("timeout"), 100))]);
+  mark(`show_${window.__blinker_show_trigger}`);
   await showWindow();
+  mark("shown");
   window.__blinker_ready_ms = performance.now();
-  invoke("report_ready", { ms: window.__blinker_ready_ms }).catch(() => {});
+  reportReady(window.__blinker_ready_ms);
   // Mock mode: headless screenshot browsers resize the viewport after load; keep the
   // initial proportion so captures match the Qt reference.
   shown = !isMock;
@@ -545,6 +554,14 @@ async function main() {
   if (d === "scan" || d === "noaddons") addFolder();
   else if (d === "edit") editFolder(1);
   else if (d === "settings") openSettings();
+}
+
+/** The window is up: a second launch may now show and raise it (lib.rs `bring_to_front`). */
+function reportReady(ms) {
+  const nav = performance.getEntriesByType("navigation")[0];
+  if (nav) marks.dom_content_loaded = performance.timeOrigin + nav.domContentLoadedEventStart;
+  marks.nav_start = performance.timeOrigin;
+  invoke("report_ready", { ms, marks }).catch(() => {});
 }
 
 main().catch(async (e) => {

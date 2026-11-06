@@ -82,6 +82,52 @@ fn set_app_user_model_id() {
     }
 }
 
+/// Startup timeline (wall-clock ms since the Unix epoch, comparable with the webview's
+/// `performance.timeOrigin`). `report_ready` writes it to `BLINKER_READY_LOG`, relative
+/// to the process creation time, so a measurement can split the startup into its steps.
+pub(crate) mod timeline {
+    use std::sync::Mutex;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static MARKS: Mutex<Vec<(&'static str, f64)>> = Mutex::new(Vec::new());
+
+    pub fn now_ms() -> f64 {
+        SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64() * 1000.0).unwrap_or(0.0)
+    }
+
+    pub fn mark(name: &'static str) {
+        if let Ok(mut m) = MARKS.lock() {
+            m.push((name, now_ms()));
+        }
+    }
+
+    pub fn marks() -> Vec<(&'static str, f64)> {
+        MARKS.lock().map(|m| m.clone()).unwrap_or_default()
+    }
+
+    /// When this process was created (epoch ms).
+    #[cfg(windows)]
+    pub fn process_start_ms() -> Option<f64> {
+        use windows_sys::Win32::Foundation::FILETIME;
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
+        let z = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+        let (mut c, mut e, mut k, mut u) = (z, z, z, z);
+        // SAFETY: the pseudo handle is always valid; the out-pointers are valid FILETIMEs.
+        let ok = unsafe { GetProcessTimes(GetCurrentProcess(), &mut c, &mut e, &mut k, &mut u) };
+        if ok == 0 {
+            return None;
+        }
+        let t100ns = (u64::from(c.dwHighDateTime) << 32) | u64::from(c.dwLowDateTime);
+        // 100 ns ticks since 1601-01-01 -> ms since 1970-01-01
+        Some(t100ns as f64 / 10_000.0 - 11_644_473_600_000.0)
+    }
+
+    #[cfg(not(windows))]
+    pub fn process_start_ms() -> Option<f64> {
+        None
+    }
+}
+
 /// Set once the frontend has shown the main window (first paint done, `report_ready`).
 pub(crate) static WINDOW_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -124,6 +170,7 @@ pub fn run() {
         return;
     }
 
+    timeline::mark("run");
     set_app_user_model_id();
 
     // Single instance first: the plugin's setup runs before the window is created, so a
@@ -138,7 +185,15 @@ pub fn run() {
         // Native pickers: `open` (folders/files) and `save` (theme export); capability
         // `dialog:allow-open` + `dialog:allow-save` only.
         .plugin(tauri_plugin_dialog::init())
+        .on_page_load(|_, payload| {
+            timeline::mark(match payload.event() {
+                tauri::webview::PageLoadEvent::Started => "page_started",
+                tauri::webview::PageLoadEvent::Finished => "page_finished",
+            });
+        })
         .setup(move |app| {
+            // The windows from tauri.conf.json (webview included) exist by now.
+            timeline::mark("setup");
             let config_path = paths::config_path();
             // BLINKER_CONFIG_DIR runs (tests, side-by-side) never migrate the exe-dir config.
             if !paths::config_dir_overridden() {
@@ -160,6 +215,7 @@ pub fn run() {
                 let _ = w.set_title(&format!("Blinker UI  v{}", env!("CARGO_PKG_VERSION")));
             }
             net::start_poller(app.handle().clone(), ports);
+            timeline::mark("setup_done");
             Ok(())
         })
         .on_window_event(|window, event| {
