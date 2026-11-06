@@ -128,7 +128,8 @@ pub(crate) mod timeline {
     }
 }
 
-/// Set once the frontend has shown the main window (first paint done, `report_ready`).
+/// Set once the frontend has shown the main window (`report_ready`: after the first
+/// paint, or with the "Startup failed" message).
 pub(crate) static WINDOW_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// What the first instance does on a second launch.
@@ -137,6 +138,11 @@ struct SecondLaunch {
     show: bool,
     unminimize: bool,
     raise: bool,
+}
+
+/// The frontend reported ready, or the window is visible anyway.
+fn window_ready(reported: bool, visible: bool) -> bool {
+    reported || visible
 }
 
 /// Before the window has been shown for the first time (themed first frame still
@@ -149,7 +155,9 @@ fn second_launch_actions(ready: bool, minimized: bool) -> SecondLaunch {
 /// handler). Windows only lets the foreground owner take focus, so a plain `set_focus`
 /// from a background process just flashes the taskbar; toggling always-on-top raises it.
 fn bring_to_front(w: &tauri::WebviewWindow) {
-    let ready = WINDOW_READY.load(std::sync::atomic::Ordering::SeqCst);
+    // A window that is already visible was shown by the frontend (first paint or the
+    // "Startup failed" message), even if `report_ready` never arrived.
+    let ready = window_ready(WINDOW_READY.load(std::sync::atomic::Ordering::SeqCst), w.is_visible().unwrap_or(false));
     let act = second_launch_actions(ready, w.is_minimized().unwrap_or(false));
     if act.show {
         let _ = w.show();
@@ -267,6 +275,13 @@ mod second_launch_tests {
         let none = SecondLaunch { show: false, unminimize: false, raise: false };
         assert_eq!(second_launch_actions(false, false), none);
         assert_eq!(second_launch_actions(false, true), none);
+    }
+
+    #[test]
+    fn visible_window_counts_as_ready_without_report() {
+        assert!(!window_ready(false, false));
+        assert!(window_ready(false, true));
+        assert!(window_ready(true, false));
     }
 
     #[test]

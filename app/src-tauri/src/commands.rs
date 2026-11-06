@@ -610,8 +610,10 @@ pub fn is_dev() -> bool {
     cfg!(debug_assertions)
 }
 
-/// The UI calls this right after it has shown the themed window (first paint done). From
-/// then on a second launch may show and raise the window (`bring_to_front`).
+/// The UI calls this once the main window is shown: after the themed first paint, or
+/// after showing the "Startup failed" message when startup failed. From then on a second
+/// launch may show and raise the window (`bring_to_front`, which also treats an already
+/// visible window as ready).
 ///
 /// `ms` is `performance.now()` at show (`window.__blinker_ready_ms`); `marks` are the
 /// UI's startup steps as epoch ms. When `BLINKER_READY_LOG` names a file, one line

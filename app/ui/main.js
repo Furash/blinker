@@ -567,7 +567,11 @@ function reportReady(ms) {
 main().catch(async (e) => {
   console.error(e);
   await showWindow().catch(() => {});
-  message("Blinker UI", `Startup failed:\n${errText(e)}`, "critical");
+  const box = message("Blinker UI", `Startup failed:\n${errText(e)}`, "critical");
+  // Also on failure, or a second launch could never bring the window back.
+  mark("startup_failed");
+  reportReady(performance.now());
+  await box;
 });
 
 // exposed for later tasks (dialogs)
