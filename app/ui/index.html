@@ -1,0 +1,15 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Blinker UI</title>
+</head>
+<body>
+blinker
+<script>
+requestAnimationFrame(() => {
+  window.__TAURI__.window.getCurrentWindow().show();
+});
+</script>
+</body>
+</html>
