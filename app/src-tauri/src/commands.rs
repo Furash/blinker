@@ -547,7 +547,7 @@ pub fn detect_preset(theme: Map<String, Value>) -> String {
 /// text is what the "Export failed" box shows.
 #[tauri::command]
 pub async fn export_theme(path: String, theme: Map<String, Value>) -> Result<(), String> {
-    crate::theme::write_theme_file(Path::new(&path), &theme).map_err(|e| e.to_string())
+    crate::theme::write_theme_file(Path::new(&path), &theme)
 }
 
 /// `_import_theme` after the open dialog: accepted values, unknown and invalid keys.

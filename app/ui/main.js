@@ -343,16 +343,15 @@ async function commitSettings(r) {
   refreshRows();
 }
 
-/** `_open_settings`. Cancel puts the committed theme back over the live preview. */
+/** `_open_settings`: OK commits like Apply; Cancel changes nothing (an Apply stays). */
 async function openSettings() {
   const c = state.config;
   const res = await settingsDialog(
     { theme: c.theme, terminal: c.terminal, ai_aliases: c.ai_aliases, blender_path: c.blender_path },
     state.settingsInfo,
-    { onApply: commitSettings, preview: applyTheme, tab: mockScenario ? mockScenario.tab : 0 },
+    { onApply: commitSettings, tab: mockScenario ? mockScenario.tab : 0 },
   );
   if (res) await commitSettings(res);
-  else applyTheme(state.config.theme);
 }
 
 const handlers = {

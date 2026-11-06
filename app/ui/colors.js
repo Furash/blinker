@@ -22,11 +22,11 @@ export const CUSTOM_PRESET = "Custom";
  *   colorKeys    [[key, label], ...] (COLOR_KEYS)
  *   defaults     DEFAULT_THEME
  *   run(fn)      runs fn after every earlier dialog action (serialised)
- *   changed()    the draft changed (live preview)
  *   onExport/onImport  the Export theme… / Import theme… buttons
+ *   preset       the initial preset name (`_detect_preset()` at construction)
  * Returns { el, refresh(key), refreshAll(), detect(), commitFocused(), closePopups() }.
  */
-export function colorsTab({ draft, presets, colorKeys, defaults, run, changed, onExport, onImport }) {
+export function colorsTab({ draft, presets, colorKeys, defaults, run, preset, onExport, onImport }) {
   const page = el("div", "page colors-page");
   const swatches = new Map();
   const hexEdits = new Map();
@@ -37,7 +37,7 @@ export function colorsTab({ draft, presets, colorKeys, defaults, run, changed, o
   const names = presets.map((p) => p.name);
   const presetCb = comboBox({
     items: [...names, CUSTOM_PRESET],
-    value: CUSTOM_PRESET,
+    value: preset,
     onChange: (name) => run(() => onPresetChange(name)),
   });
   presetRow.append(
@@ -76,7 +76,6 @@ export function colorsTab({ draft, presets, colorKeys, defaults, run, changed, o
         draft[key] = c; // QColor.name(): #rrggbb, lower case
         refresh(key);
         await detect();
-        changed();
       });
     });
     pickers.set(key, picker);
@@ -95,7 +94,6 @@ export function colorsTab({ draft, presets, colorKeys, defaults, run, changed, o
       draft[key] = defaults[key];
       refresh(key);
       await detect();
-      changed();
     }));
     const lbl = el("span", "color-label", label);
     const swCell = el("div", "swatch-cell");
@@ -134,7 +132,6 @@ export function colorsTab({ draft, presets, colorKeys, defaults, run, changed, o
       if (key in p.theme) draft[key] = p.theme[key];
       refresh(key);
     }
-    changed();
   }
 
   /** `_commit_hex`: normalise or restore the text. */
@@ -149,7 +146,6 @@ export function colorsTab({ draft, presets, colorKeys, defaults, run, changed, o
       draft[key] = norm;
       refresh(key);
       await detect();
-      changed();
     });
   }
 

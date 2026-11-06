@@ -5,6 +5,7 @@ mod config;
 mod fonts;
 mod net;
 mod paths;
+mod pyerr;
 mod terminal;
 mod theme;
 

@@ -3,9 +3,8 @@
 //
 // Resolves to { theme, terminal, ai_aliases, blender_path } on OK (`_commit_inputs`),
 // null on Cancel/Esc/close. Apply calls `onApply(result)` and keeps the dialog open.
-// Live preview (not in Python, which shows changes on Apply only): every draft change
-// is applied to the page with `preview(theme)`; the caller restores its committed theme
-// when the dialog is cancelled.
+// As in Python, edits only change the dialog's draft (and its own swatches); the live
+// theme changes on Apply/OK only (the caller's `onApply` / the resolved result).
 
 import { openDialog, pushButton, message } from "./dialog.js";
 import { spinBox } from "./rows.js";
@@ -38,16 +37,26 @@ let fontCache = null; // QFontDatabase.families(), fetched once
 /**
  *   cur       { theme, terminal, ai_aliases, blender_path } (the committed values)
  *   info      { presets: [{name, theme}], colorKeys, defaults: { theme, terminal, ai_aliases } }
- *   onApply(result), preview(theme); tab = the tab shown first (Python: Terminal)
+ *   onApply(result); tab = the tab shown first (Python: Terminal)
+ * Async: the preset combo's initial value comes from the backend's detect_preset, so the
+ * dialog opens with it already set (no flash of `Custom`).
  */
-export function settingsDialog(cur, info, { onApply, preview, tab = 0 }) {
+export async function settingsDialog(cur, info, { onApply, tab = 0 }) {
   const { presets, colorKeys, defaults } = info;
   const draft = { ...cur.theme };
+  let initialPreset = "Custom";
+  try {
+    initialPreset = await invoke("detect_preset", { theme: draft });
+  } catch {
+    /* Custom */
+  }
 
   // Every action that reads or writes the draft runs in order (the backend helpers are
   // async), so OK/Apply always see the result of an edit committed just before.
+  // Nothing queued runs once the dialog is closed.
+  let closed = false;
   let chain = Promise.resolve();
-  const run = (fn) => (chain = chain.then(fn).catch((e) => console.error(e)));
+  const run = (fn) => (chain = chain.then(() => (closed ? undefined : fn())).catch((e) => console.error(e)));
   let busy = false; // a native picker or a message box is open
 
   // ---------- Terminal ----------
@@ -107,11 +116,10 @@ export function settingsDialog(cur, info, { onApply, preview, tab = 0 }) {
   resetTerminal.classList.add("span");
 
   // ---------- Fonts ----------
-  const changedFont = () => run(() => doPreview());
-  const uiFamily = comboBox({ items: fontCache || [], value: String(draft.ui_font_family), editable: true, onChange: changedFont });
-  const monoFamily = comboBox({ items: fontCache || [], value: String(draft.mono_font_family), editable: true, onChange: changedFont });
+  const uiFamily = comboBox({ items: fontCache || [], value: String(draft.ui_font_family), editable: true });
+  const monoFamily = comboBox({ items: fontCache || [], value: String(draft.mono_font_family), editable: true });
   const sizeSpin = (v) => {
-    const s = spinBox({ value: FONT_SIZE_MIN, min: FONT_SIZE_MIN, max: FONT_SIZE_MAX, onCommit: changedFont, onStep: changedFont });
+    const s = spinBox({ value: FONT_SIZE_MIN, min: FONT_SIZE_MIN, max: FONT_SIZE_MAX });
     s.setValue(v);
     return s;
   };
@@ -140,7 +148,7 @@ export function settingsDialog(cur, info, { onApply, preview, tab = 0 }) {
     monoSize.setValue(draft.mono_font_size);
   };
 
-  // ---------- result / preview ----------
+  // ---------- result ----------
   const fields = () => ({
     uiFamily: uiFamily.value(),
     uiSize: uiSize.value(),
@@ -156,12 +164,11 @@ export function settingsDialog(cur, info, { onApply, preview, tab = 0 }) {
     Object.assign(draft, r.theme);
     return r;
   };
-  const doPreview = () => preview(commitSettings(draft, fields(), defaults).theme);
 
   // ---------- Colors ----------
   const colors = colorsTab({
     draft, presets, colorKeys, defaults: defaults.theme, run,
-    changed: doPreview,
+    preset: initialPreset,
     onExport: guarded(async () => {
       colors.commitFocused();
       await run(() => commitInputs());
@@ -192,7 +199,6 @@ export function settingsDialog(cur, info, { onApply, preview, tab = 0 }) {
         setFontWidgets();
         colors.refreshAll();
         await colors.detect();
-        doPreview();
       });
       const notes = importNotes(res.unknown, res.invalid);
       if (notes) await message("Import notes", notes, "warning");
@@ -245,7 +251,6 @@ export function settingsDialog(cur, info, { onApply, preview, tab = 0 }) {
     aiE.value = defaults.ai_aliases;
     blenderE.value = "";
     await colors.detect();
-    doPreview();
   });
   const apply = () => {
     if (busy) return;
@@ -267,6 +272,7 @@ export function settingsDialog(cur, info, { onApply, preview, tab = 0 }) {
     dlg.close(null);
   };
   const closeAll = () => {
+    closed = true;
     uiFamily.closePopup();
     monoFamily.closePopup();
     colors.closePopups();
@@ -302,6 +308,5 @@ export function settingsDialog(cur, info, { onApply, preview, tab = 0 }) {
     onReject: cancel,
     focus: tabbar,
   });
-  run(() => colors.detect());
   return dlg.result;
 }

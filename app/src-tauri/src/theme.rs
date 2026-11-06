@@ -164,8 +164,9 @@ fn ascii_escape(s: &str) -> String {
 }
 
 /// `_export_theme`: `Path(path).write_text(json.dumps(draft, indent=2), encoding="utf-8")`.
-pub fn write_theme_file(path: &std::path::Path, theme: &Map) -> std::io::Result<()> {
-    std::fs::write(path, theme_to_json(theme))
+/// Errors are Python's `str(exc)` (see pyerr).
+pub fn write_theme_file(path: &std::path::Path, theme: &Map) -> Result<(), String> {
+    std::fs::write(path, theme_to_json(theme)).map_err(|e| crate::pyerr::os_error(&e, path))
 }
 
 /// A JSON object's entries in file order (serde_json's Map is sorted).
@@ -241,7 +242,7 @@ fn python_float(f: f64) -> String {
 }
 
 /// Python `repr(str)`: single quotes unless the text has ' and no ".
-fn python_repr_str(s: &str) -> String {
+pub(crate) fn python_repr_str(s: &str) -> String {
     let q = if s.contains('\'') && !s.contains('"') { '"' } else { '\'' };
     let mut out = String::from(q);
     for c in s.chars() {
@@ -322,7 +323,19 @@ pub fn parse_theme_import(text: &str) -> Result<ImportedTheme, String> {
 
 /// `_import_theme`: read the file (UTF-8) and parse it.
 pub fn read_theme_file(path: &std::path::Path) -> Result<ImportedTheme, String> {
-    let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let bytes = std::fs::read(path).map_err(|e| crate::pyerr::os_error(&e, path))?;
+    parse_theme_bytes(&bytes)
+}
+
+/// The file's bytes as `_import_theme` sees them: `read_text(encoding="utf-8")`, then
+/// `json.loads`, with Python's error texts.
+/// Texts Python's decoder accepts but serde_json does not (NaN, Infinity, lone
+/// surrogate escapes, very deep nesting) fail with serde's message.
+pub fn parse_theme_bytes(bytes: &[u8]) -> Result<ImportedTheme, String> {
+    let text = crate::pyerr::decode_text(bytes)?;
+    if let Some(msg) = crate::pyerr::json_error(&text) {
+        return Err(msg);
+    }
     parse_theme_import(&text)
 }
 
@@ -558,6 +571,139 @@ mod tests {
         let r = parse_theme_import(r##"{"x": 1, "accent_fg": "#000000", "y": 2, "x": 3, "accent_fg": "#ffffff"}"##).unwrap();
         assert_eq!(r.unknown, ["x", "y"]);
         assert_eq!(r.theme["accent_fg"], json!("#ffffff"));
+    }
+
+    // ----- Python error texts (Fix round 1). Expected strings generated with
+    // Python 3.11.9 on Windows: Path.read_text(encoding="utf-8") then json.loads. -----
+
+    fn unhex(s: &str) -> Vec<u8> {
+        (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+    }
+
+    #[test]
+    fn import_errors_are_python_texts() {
+        let table: &[(&str, Option<&str>)] = &[
+        ("", Some("Expecting value: line 1 column 1 (char 0)")),
+        ("202020", Some("Expecting value: line 1 column 4 (char 3)")),
+        ("7b", Some("Expecting property name enclosed in double quotes: line 1 column 2 (char 1)")),
+        ("7b22612220317d", Some("Expecting ':' delimiter: line 1 column 6 (char 5)")),
+        ("7b2261223a2031202262223a20327d", Some("Expecting ',' delimiter: line 1 column 9 (char 8)")),
+        ("7b2261223a207d", Some("Expecting value: line 1 column 7 (char 6)")),
+        ("7b7d2078", Some("Extra data: line 1 column 4 (char 3)")),
+        ("7b2261223a2022616263", Some("Unterminated string starting at: line 1 column 7 (char 6)")),
+        ("7b2261223a2022610962227d", Some("Invalid control character at: line 1 column 9 (char 8)")),
+        ("7b2261223a20225c71227d", Some("Invalid \\escape: line 1 column 8 (char 7)")),
+        ("7b2261223a20225c7531324734227d", Some("Invalid \\uXXXX escape: line 1 column 9 (char 8)")),
+        ("efbbbf7b7d", Some("Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)")),
+        ("7b2261223a20ff7d", Some("'utf-8' codec can't decode byte 0xff in position 6: invalid start byte")),
+        ("7b2261223a2022e228227d", Some("'utf-8' codec can't decode byte 0xe2 in position 7: invalid continuation byte")),
+        ("7b2261223a2022e282", Some("'utf-8' codec can't decode bytes in position 7-8: unexpected end of data")),
+        ("7b0d0a20202261223a20312c0d0a202022622220320d0a7d", Some("Expecting ':' delimiter: line 3 column 7 (char 18)")),
+        ("7b2261223a20312c7d", Some("Expecting property name enclosed in double quotes: line 1 column 9 (char 8)")),
+        ("7b2261223a205b312c20322c5d7d", Some("Expecting value: line 1 column 13 (char 12)")),
+        ("7b2261223a207472757d", Some("Expecting value: line 1 column 7 (char 6)")),
+        ("7b2261223a2030317d", Some("Expecting ',' delimiter: line 1 column 8 (char 7)")),
+        ("7b22c3a9223a203120787d", Some("Expecting ',' delimiter: line 1 column 9 (char 8)")),
+        ("0a0a20207b2261227d", Some("Expecting ':' delimiter: line 3 column 7 (char 8)")),
+        ("7b0d22612220317d", Some("Expecting ':' delimiter: line 2 column 5 (char 6)")),
+        ("7b2261223a2022785c", Some("Unterminated string starting at: line 1 column 7 (char 6)")),
+        ("7b2261223a202d7d", Some("Expecting value: line 1 column 7 (char 6)")),
+        ("7b2261223a317d7d", Some("Extra data: line 1 column 8 (char 7)")),
+        ("7b22c3a9f09f9880223a203120327d", Some("Expecting ',' delimiter: line 1 column 10 (char 9)")),
+        ("7b2261223a202200227d", Some("Invalid control character at: line 1 column 8 (char 7)")),
+        ("7b2261223a2031657d", Some("Expecting ',' delimiter: line 1 column 8 (char 7)")),
+        ("7b2261223a20312e7d", Some("Expecting ',' delimiter: line 1 column 8 (char 7)")),
+        ("7b613a20317d", Some("Expecting property name enclosed in double quotes: line 1 column 2 (char 1)")),
+        ("7b2761273a20317d", Some("Expecting property name enclosed in double quotes: line 1 column 2 (char 1)")),
+        ("7b2261223a205b3120325d7d", Some("Expecting ',' delimiter: line 1 column 10 (char 9)")),
+        ("7b2261223a207b22622220317d7d", Some("Expecting ':' delimiter: line 1 column 12 (char 11)")),
+        ("7b2261223a205b7d", Some("Expecting value: line 1 column 8 (char 7)")),
+        ("7b2261223a2022e080227d", Some("'utf-8' codec can't decode byte 0xe0 in position 7: invalid continuation byte")),
+        ("7b2261223a2022eda080227d", Some("'utf-8' codec can't decode byte 0xed in position 7: invalid continuation byte")),
+        ("c0af", Some("'utf-8' codec can't decode byte 0xc0 in position 0: invalid start byte")),
+        ("7b2261223a2022f09f98227d", Some("'utf-8' codec can't decode bytes in position 7-9: invalid continuation byte")),
+        ("7b2261223a2022e28228227d", Some("'utf-8' codec can't decode bytes in position 7-8: invalid continuation byte")),
+        ("7b2261223a20225c753132227d", Some("Invalid \\uXXXX escape: line 1 column 9 (char 8)")),
+        ("7b2261223a20225c", Some("Unterminated string starting at: line 1 column 7 (char 6)")),
+        ("7b226122", Some("Expecting ':' delimiter: line 1 column 5 (char 4)")),
+        ("7b2261223a", Some("Expecting value: line 1 column 6 (char 5)")),
+        ("7b2261223a2031", Some("Expecting ',' delimiter: line 1 column 8 (char 7)")),
+        ("5b", Some("Expecting value: line 1 column 2 (char 1)")),
+        ("7b2261223a205b31", Some("Expecting ',' delimiter: line 1 column 9 (char 8)")),
+        ("7b207d", None),
+        ("7b2261223a20221f227d", Some("Invalid control character at: line 1 column 8 (char 7)")),
+        ("7b2261223a090a2031202c20207d", Some("Expecting property name enclosed in double quotes: line 2 column 7 (char 13)")),
+        ("7b2261223a20312c202262227d", Some("Expecting ':' delimiter: line 1 column 13 (char 12)")),
+        ("6e756c", Some("Expecting value: line 1 column 1 (char 0)")),
+        ("7b2261223a20747275652066616c73657d", Some("Expecting ',' delimiter: line 1 column 12 (char 11)")),
+        ("7b2261223a20317d0a0a2078", Some("Extra data: line 3 column 2 (char 11)")),
+        ("7b2261223a2022c3a980227d", Some("'utf-8' codec can't decode byte 0x80 in position 9: invalid start byte")),
+        ("7b2261223a20317d0d0a", None),
+        ("7b2261223a205b312c207b2262223a20327d5d2c202263223a202264227d", None),
+        ("7b2261223a202d312e35652b337d", None),
+        ("5b312c20325d", Some("Theme file must be a JSON object")),
+        ("7b2261223a20225c6e5c7530306539227d", None),
+        ];
+        for (hex, want) in table {
+            let got = parse_theme_bytes(&unhex(hex));
+            match want {
+                Some(msg) => assert_eq!(got.as_ref().err().map(String::as_str), Some(*msg), "{hex}"),
+                None => assert!(got.is_ok(), "{hex}: {got:?}"),
+            }
+        }
+    }
+
+    fn py_path(p: &std::path::Path) -> String {
+        // repr() of the backslash path, as Python prints the filename
+        format!("'{}'", p.to_string_lossy().replace('/', "\\").replace('\\', "\\\\"))
+    }
+
+    #[test]
+    fn import_missing_file_is_errno_2() {
+        let t = tempfile::tempdir().unwrap();
+        let p = t.path().join("nope.json");
+        assert_eq!(read_theme_file(&p).unwrap_err(), format!("[Errno 2] No such file or directory: {}", py_path(&p)));
+        // forward slashes are shown as Python's WindowsPath prints them
+        let fwd = format!("{}/sub/x.json", t.path().to_string_lossy().replace('\\', "/"));
+        let want = format!("[Errno 2] No such file or directory: {}", py_path(std::path::Path::new(&fwd)));
+        assert_eq!(read_theme_file(std::path::Path::new(&fwd)).unwrap_err(), want);
+        assert_eq!(write_theme_file(std::path::Path::new(&fwd), &preset("Light").unwrap()).unwrap_err(), want);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn directory_and_readonly_are_errno_13_on_windows() {
+        let t = tempfile::tempdir().unwrap();
+        let want = format!("[Errno 13] Permission denied: {}", py_path(t.path()));
+        assert_eq!(read_theme_file(t.path()).unwrap_err(), want);
+        assert_eq!(write_theme_file(t.path(), &preset("Light").unwrap()).unwrap_err(), want);
+        let ro = t.path().join("ro.json");
+        std::fs::write(&ro, "{}").unwrap();
+        let mut perm = std::fs::metadata(&ro).unwrap().permissions();
+        perm.set_readonly(true);
+        std::fs::set_permissions(&ro, perm.clone()).unwrap();
+        let r = write_theme_file(&ro, &preset("Light").unwrap());
+        perm.set_readonly(false);
+        std::fs::set_permissions(&ro, perm).unwrap();
+        assert_eq!(r.unwrap_err(), format!("[Errno 13] Permission denied: {}", py_path(&ro)));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn invalid_file_name_is_errno_22_on_windows() {
+        let t = tempfile::tempdir().unwrap();
+        let p = t.path().join("a?b.json");
+        let want = format!("[Errno 22] Invalid argument: {}", py_path(&p));
+        assert_eq!(read_theme_file(&p).unwrap_err(), want);
+        assert_eq!(write_theme_file(&p, &preset("Light").unwrap()).unwrap_err(), want);
+    }
+
+    #[test]
+    fn python_quotes_paths_with_apostrophes_in_double_quotes() {
+        let t = tempfile::tempdir().unwrap();
+        let p = t.path().join("it's").join("x.json");
+        let body = p.to_string_lossy().replace('\\', "\\\\");
+        assert_eq!(read_theme_file(&p).unwrap_err(), format!("[Errno 2] No such file or directory: \"{body}\""));
     }
 
     #[test]
