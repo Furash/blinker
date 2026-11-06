@@ -22,7 +22,8 @@ theme). Old: config next to its exe (scratch copy); new: `BLINKER_CONFIG_DIR`.
 
 ## Method
 
-One external detector for both apps (`detect.py`, Python `-I` + ctypes, scratchpad):
+One external detector for both apps ([tools/detect_window_paint.py](../../../tools/detect_window_paint.py),
+Python `-I` + ctypes; usage and definitions in its header):
 
 - t = 0 just before `CreateProcess` (what a double-click starts).
 - **visible**: a visible, titled top-level window of that PID, at least 300x200
@@ -59,6 +60,10 @@ reliably (an occluded WebView2 stops repainting), so it is not in the tables.
 | Old, warm (n=5) | **2074** (1998-2125) | 2128 (2035-2168) | 2247 (2147-2300) |
 | New, cold-ish (n=5) | **2320** (1755-11015) | 2356 (1783-11053) | = paint |
 | New, warm (n=5) | **655** (630-711) | 686 (662-745) | = paint |
+
+The cold-ish medians are not directly comparable: with n = 5, a few runs held by
+Defender before the process even existed (~10 s: 1 of 5 old runs, 2 of 5 new runs) or
+otherwise slowed move the median a lot; read them with the raw lists below.
 
 Raw runs (visible / paint / populated):
 
@@ -207,10 +212,11 @@ on restart).
 | Background poll of folder ports | verified live (status event with all three ports) |
 | Singleton: second launch focuses the window | verified live (this task: minimised window restored, foreground, second process exit 0 in 0.12 s) |
 | Second launch before ready / after startup failure | verified by unit test + mock failure test (fix `1a1db48`) |
+| Window never shown by the frontend -> backend shows it after 5 s | decision unit-tested (`fallback_should_show`); not triggered live (no way to hang the frontend in a release build); normal starts unaffected (smoke run) |
 | Update check: up to date / update available (No) | verified live (debug exe + local server: texts equal to Python) |
 | Update download + verify + swap + relaunch | verified end to end in Task 12 (`--update-selftest`); GUI click-through of a real install not redone |
 | AUMID / icon | unit test + Task 13 (taskbar grouping not checked visually) |
-| WebView2 missing message | not verified (needs a machine without the runtime) |
+| WebView2 missing message | decision unit-tested (`webview2_installed` with an injected registry reader: present / absent / `0.0.0.0` / empty); live with a debug build and `BLINKER_SIMULATE_NO_WEBVIEW2`: the native box appeared in 0.2 s with the download link, No -> exit code 1. Not verified on a machine really without the runtime. Added in the final fix wave (`9b9e830`). |
 | Config migration from exe dir | verified by tests (Task 2/8); not run live (it would touch the real `%APPDATA%`) |
 | 100 % DPI look | verified in Task 9 (mock at 100 %); this task compared 150 % |
 

@@ -185,17 +185,33 @@ is published as a **pre-release**, so existing installs do not offer it as an up
 until it is promoted.
 
 Requirements: Windows 10/11 with the **WebView2 Evergreen runtime** (preinstalled on
-Windows 11; on Windows 10 it may need installing from Microsoft).
+Windows 11; on Windows 10 it may need installing from Microsoft). Without it the app
+shows a message with the download link instead of starting.
 
-The first start of a freshly unzipped (unsigned) exe can take several seconds while
-Windows Defender checks the new file; later starts take well under a second
-(measurements: `docs/superpowers/specs/startup-results.md`).
+The first start of a freshly unzipped (unsigned) exe can take several seconds (up to
+~11 s measured) while Windows Defender checks the new file; later starts take about
+0.7-1 s (measurements: [startup-results.md](docs/superpowers/specs/startup-results.md),
+measured with [tools/detect_window_paint.py](tools/detect_window_paint.py)).
 
 ### Config
 
-- `%APPDATA%\BlinkerUI\blinker_ui_config.json` (same schema as before). On first start
-  an existing `blinker_ui_config.json` next to the exe (the Python app's location) is
-  copied there once, so updates that replace the install folder no longer lose it.
+- `%APPDATA%\BlinkerUI\blinker_ui_config.json` (same schema as before). On first start,
+  if that file does not exist yet, an existing `blinker_ui_config.json` next to the exe
+  (the Python app's location) is copied there once. Because the config now lives in
+  `%APPDATA%`, the new app's own updates keep it.
+
+### Upgrading from the Python version (v0.1.x)
+
+The Python app's **Update** button replaces its install folder and deletes the old one,
+config included, before the new app ever starts, so that route loses the folder list
+and theme. Keep them with either of:
+
+1. Before updating, copy `blinker_ui_config.json` from the install folder to
+   `%APPDATA%\BlinkerUI\` (create the folder), then update as usual; or
+2. Download the release zip and extract it over the old install by hand (into the
+   folder that contains the old `BlinkerUI\`, replacing files): the old config stays
+   next to the exe and is copied to `%APPDATA%\BlinkerUI` on first start. The old
+   `_internal\` folder is no longer used and can be deleted.
 - Custom AI icons: `%APPDATA%\BlinkerUI\icons`, then `icons\` next to the exe, then the
   bundled ones.
 - Development: `BLINKER_CONFIG_DIR=<dir>` uses `<dir>\blinker_ui_config.json` instead
