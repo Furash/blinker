@@ -15,7 +15,8 @@ for ($i = 1; $i -le $Runs; $i++) {
     while ($sw.ElapsedMilliseconds -lt 60000) {
         $p.Refresh()
         if ($p.HasExited) { break }
-        if ($p.MainWindowHandle -ne [IntPtr]::Zero -and [W.U]::IsWindowVisible($p.MainWindowHandle)) {
+        # A titled window: WebView2/tao first show an untitled helper window, which is not the UI.
+        if ($p.MainWindowHandle -ne [IntPtr]::Zero -and $p.MainWindowTitle -and [W.U]::IsWindowVisible($p.MainWindowHandle)) {
             $ms = $sw.ElapsedMilliseconds; break
         }
         Start-Sleep -Milliseconds 10
