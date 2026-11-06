@@ -172,17 +172,19 @@ folders, each with Launch / Kill, Reload, Restart, Clear console, AI-terminal bu
 Open folder, Edit and remove, plus the selected folder's Blender output. It starts
 Blender with `bootstrap.py` exactly like the CLI.
 
-The app is now built with Tauri 2 (Rust backend, plain HTML/CSS/JS frontend in
-`app/`). The previous PySide6 app (`blinker_ui.py`, `BlinkerUI.spec`, `build_exe.cmd`)
-stays in the repo until the owner removes it.
+The app is built with Tauri 2 (Rust backend, plain HTML/CSS/JS frontend in `app/`). The
+previous PySide6 app (`blinker_ui.py`, `BlinkerUI.spec`, `build_exe.cmd`) stays in the
+repo until it is removed in a separate change.
 
 ### Install
 
-Download `BlinkerUI-vX.Y.Z.zip` from the GitHub releases, unzip it and run
-`BlinkerUI\BlinkerUI.exe` (the zip holds one `BlinkerUI\` folder: the exe, `icons\`,
-`logo.png`, `logo.ico`; `bootstrap.py` is embedded in the exe). The first Tauri release
-is published as a **pre-release**, so existing installs do not offer it as an update
-until it is promoted.
+**No Tauri release has been published yet.** Until `v0.2.0` is out, build it from source
+(see [Build](#build)). Releases are published as GitHub **pre-releases** by default, so
+existing installs do not offer them as an update until one is promoted.
+
+Once a release exists: download `BlinkerUI-vX.Y.Z.zip` from the GitHub releases, unzip it
+and run `BlinkerUI\BlinkerUI.exe` (the zip holds one `BlinkerUI\` folder: the exe,
+`icons\`, `logo.png`, `logo.ico`; `bootstrap.py` is embedded in the exe).
 
 Requirements: Windows 10/11 with the **WebView2 Evergreen runtime** (preinstalled on
 Windows 11; on Windows 10 it may need installing from Microsoft). Without it the app
@@ -199,12 +201,17 @@ measured with [tools/detect_window_paint.py](tools/detect_window_paint.py)).
   if that file does not exist yet, an existing `blinker_ui_config.json` next to the exe
   (the Python app's location) is copied there once. Because the config now lives in
   `%APPDATA%`, the new app's own updates keep it.
+- Custom AI icons: `%APPDATA%\BlinkerUI\icons`, then `icons\` next to the exe, then the
+  bundled ones.
+- Development: `BLINKER_CONFIG_DIR=<dir>` uses `<dir>\blinker_ui_config.json` instead
+  (no migration), so test runs never touch the real config.
 
 ### Upgrading from the Python version (v0.1.x)
 
 The Python app's **Update** button replaces its install folder and deletes the old one,
 config included, before the new app ever starts, so that route loses the folder list
-and theme. Keep them with either of:
+and theme (on some Windows 11 setups it may also do nothing at all). Keep them with
+either of:
 
 1. Before updating, copy `blinker_ui_config.json` from the install folder to
    `%APPDATA%\BlinkerUI\` (create the folder), then update as usual; or
@@ -212,10 +219,6 @@ and theme. Keep them with either of:
    folder that contains the old `BlinkerUI\`, replacing files): the old config stays
    next to the exe and is copied to `%APPDATA%\BlinkerUI` on first start. The old
    `_internal\` folder is no longer used and can be deleted.
-- Custom AI icons: `%APPDATA%\BlinkerUI\icons`, then `icons\` next to the exe, then the
-  bundled ones.
-- Development: `BLINKER_CONFIG_DIR=<dir>` uses `<dir>\blinker_ui_config.json` instead
-  (no migration), so test runs never touch the real config.
 
 ### Build
 
