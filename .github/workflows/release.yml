@@ -51,7 +51,7 @@ jobs:
           INPUT_PRERELEASE: ${{ inputs.prerelease }}
         run: |
           $tag = if ($env:EVENT -eq "workflow_dispatch") { $env:INPUT_TAG } else { $env:REF_NAME }
-          if ($tag -notmatch '^v\d+\.\d+\.\d+([-+].+)?$') {
+          if ($tag -notmatch '^v\d+\.\d+\.\d+([-+][0-9A-Za-z.+-]+)?$') {
             Write-Error "Tag '$tag' must match v<MAJOR>.<MINOR>.<PATCH> (e.g. v0.1.1)"
             exit 1
           }
@@ -65,6 +65,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ steps.resolve.outputs.tag }}
+          # nothing pushes from this job; the token is used only by the release step
+          persist-credentials: false
 
       # rustup is preinstalled on the runner; app/rust-toolchain.toml pins
       # stable-x86_64-pc-windows-msvc, so this action (stable) and the pin agree.
@@ -127,3 +129,14 @@ jobs:
             ${{ env.ZIP_PATH }}
             ${{ env.SHA_PATH }}
           generate_release_notes: true
+          # Prepended to the generated notes (softprops: body + generate_release_notes).
+          body: |
+            **Upgrading from the Python version (v0.1.x):** the in-app Update button of the
+            old app replaces its install folder and deletes the old one, including
+            `blinker_ui_config.json`, before the new app can copy it. Before updating,
+            either copy `blinker_ui_config.json` from the install folder to
+            `%APPDATA%\BlinkerUI\`, or download this zip and extract it over the old
+            install folder by hand (the new app then copies the config to
+            `%APPDATA%\BlinkerUI` on first start). Later updates keep the config, since it
+            now lives in `%APPDATA%\BlinkerUI`.
+

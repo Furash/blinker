@@ -12,7 +12,7 @@ param(
     [string]$Root = $PSScriptRoot
 )
 $ErrorActionPreference = 'Stop'
-if ($Version -notmatch '^\d+\.\d+\.\d+([-+].+)?$') { throw "Bad version '$Version'" }
+if ($Version -notmatch '^\d+\.\d+\.\d+([-+][0-9A-Za-z.+-]+)?$') { throw "Bad version '$Version'" }
 
 function Stamp([string]$Path, [string]$Pattern, [string]$Replacement) {
     $text = [IO.File]::ReadAllText($Path)

@@ -17,11 +17,14 @@ if "%TAG%"=="" set TAG=v0.0.0-local
 set VERSION=%TAG:~1%
 
 powershell -NoProfile -ExecutionPolicy Bypass -File stamp-version.ps1 -Version %VERSION% || goto :fail
-if not "%SKIP_TESTS%"=="1" (
-  pushd src-tauri
-  cargo test --locked || (popd & goto :fail)
-  popd
-)
+if "%SKIP_TESTS%"=="1" goto :build
+pushd src-tauri
+cargo test --locked
+rem Capture the result before popd, which would reset ERRORLEVEL.
+set RC=%ERRORLEVEL%
+popd
+if not "%RC%"=="0" goto :fail_rc
+:build
 cargo tauri build --no-bundle -- --locked || goto :fail
 powershell -NoProfile -ExecutionPolicy Bypass -File package.ps1 -Tag %TAG% -OutDir dist || goto :fail
 git checkout -- src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock
@@ -30,6 +33,7 @@ exit /b 0
 
 :fail
 set RC=%ERRORLEVEL%
+:fail_rc
 git checkout -- src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock
 echo Build failed.
 exit /b %RC%
