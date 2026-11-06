@@ -249,9 +249,28 @@ pub fn save(path: &Path, cfg: &Config) -> io::Result<()> {
     tmp.push(".tmp");
     let tmp = std::path::PathBuf::from(tmp);
     std::fs::write(&tmp, json)?;
-    std::fs::rename(&tmp, path).inspect_err(|_| {
+    rename_with_retry(&tmp, path).inspect_err(|_| {
         let _ = std::fs::remove_file(&tmp);
     })
+}
+
+/// Replacing the config fails while another process has it open without delete
+/// sharing (an editor, a scanner, a script reading it). Python's in-place
+/// `write_text` did not care; retry for up to ~2 s before reporting the error.
+fn rename_with_retry(from: &Path, to: &Path) -> io::Result<()> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        match std::fs::rename(from, to) {
+            // access denied (open without delete sharing) or ERROR_SHARING_VIOLATION
+            Err(e)
+                if (e.kind() == io::ErrorKind::PermissionDenied || e.raw_os_error() == Some(32))
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            r => return r,
+        }
+    }
 }
 
 /// Copies `legacy` to `new` once: only if `new` is absent and `legacy` exists.
@@ -279,6 +298,27 @@ mod tests {
     use std::fs;
 
     fn d() -> tempfile::TempDir { tempfile::tempdir().unwrap() }
+
+    /// A reader that does not share delete access (Python's open(), an editor, a
+    /// scanner) blocks the rename over the config for a moment; save waits it out.
+    #[cfg(windows)]
+    #[test]
+    fn save_retries_while_a_reader_holds_the_config() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let t = d();
+        let p = t.path().join("c.json");
+        fs::write(&p, "{}").unwrap();
+        let held = fs::OpenOptions::new().read(true).share_mode(1 | 2).open(&p).unwrap(); // READ|WRITE, no DELETE
+        let h = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            drop(held);
+        });
+        let cfg = Config { blender_path: "B".into(), ..Config::default() };
+        save(&p, &cfg).expect("saved after the reader let go");
+        h.join().unwrap();
+        assert_eq!(load(&p).blender_path, "B");
+        assert!(!t.path().join("c.json.tmp").exists());
+    }
 
     #[test]
     fn load_missing_returns_defaults() {
