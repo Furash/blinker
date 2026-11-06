@@ -207,6 +207,26 @@ const commands = {
     }
     return out;
   },
+  // Check for updates (texts as updater.rs). `&update=available` offers v0.2.0, whose
+  // download then fails the SHA256 check (the mock never quits).
+  check_for_updates: () => (params.get("update") === "available"
+    ? {
+      kind: "available",
+      offer: {
+        current: "0.1.0", tag: "v0.2.0", notes_preview: "\n\nMock release notes.",
+        zip: { name: "BlinkerUI-v0.2.0.zip", url: "https://example.invalid/BlinkerUI-v0.2.0.zip" },
+        sha: { name: "BlinkerUI-v0.2.0.zip.sha256", url: "https://example.invalid/BlinkerUI-v0.2.0.zip.sha256" },
+      },
+      dialog: { title: "Update available", icon: "question", text: "A new version is available.\n\nCurrent:  v0.1.0\n"
+        + "Latest:   v0.2.0\n\nBlinkerUI will download, close, replace itself, and relaunch.\n\nMock release notes." },
+    }
+    : { kind: "up_to_date", dialog: { title: "Updates", icon: "information", text: "You are on the latest version (v0.1.0)." } }),
+  apply_update: () => ({
+    kind: "sha_mismatch", expected: "aa", actual: "bb",
+    dialog: { title: "Updates", icon: "critical", text: "SHA256 mismatch — aborting.\n\nexpected aa\nactual   bb" },
+  }),
+  continue_update: () => ({ kind: "started" }),
+  cancel_update: () => {},
   list_fonts: () => ["Arial", "Cascadia Code", "Cascadia Mono", "Consolas", "Courier New", "Segoe UI",
     "Segoe UI Semibold", "Tahoma", "Times New Roman", "Verdana"],
 };

@@ -4,7 +4,7 @@ import { invoke, listen, showWindow, pickFile, pickFolder, isDev, isMock, mockSc
 import { applyTheme, mergeTheme } from "./theme.js";
 import { renderRows, updateRow, markSelected } from "./rows.js";
 import { OutputPane } from "./output.js";
-import { message, confirm, notImplemented } from "./dialog.js";
+import { message, confirm } from "./dialog.js";
 import { scanDialog } from "./scan.js";
 import { editDialog } from "./edit.js";
 import { settingsDialog } from "./settings.js";
@@ -354,6 +354,53 @@ async function openSettings() {
   if (res) await commitSettings(res);
 }
 
+// ---------- Check for updates (`_check_for_updates`; texts and branches: updater.rs) ----------
+
+let updating = false;
+
+const showBox = (d) => message(d.title, d.text, d.icon);
+
+/**
+ * Check, ask, download + verify, start the updater (the backend then quits the app).
+ * Python blocks the window during the request and the download; here a second click is
+ * ignored meanwhile and the cursor shows progress.
+ */
+async function checkForUpdates() {
+  if (updating) return;
+  updating = true;
+  const busy = (on) => document.body.classList.toggle("busy", on);
+  try {
+    busy(true);
+    const r = await invoke("check_for_updates").catch((e) => ({
+      dialog: { title: "Updates", text: `Could not check for updates:\n${e}`, icon: "warning" },
+    }));
+    busy(false);
+    if (r.kind !== "available") return void (await showBox(r.dialog));
+    if (!(await confirm(r.dialog.title, r.dialog.text))) return;
+
+    const { zip, sha } = r.offer;
+    busy(true);
+    let a = await invoke("apply_update", {
+      zipUrl: zip.url, zipName: zip.name, shaUrl: sha ? sha.url : null, shaName: sha ? sha.name : null,
+    }).catch((e) => ({ kind: "download_failed", dialog: { title: "Updates", text: `Download failed:\n${e}`, icon: "critical" } }));
+    busy(false);
+    if (a.kind === "sha_unverifiable") {
+      if (!(await confirm(a.dialog.title, a.dialog.text, "warning"))) {
+        await invoke("cancel_update", { zipPath: a.zip_path }).catch(() => {});
+        return;
+      }
+      a = await invoke("continue_update", { zipPath: a.zip_path }).catch((e) => ({
+        kind: "launch_failed", dialog: { title: "Updates", text: `Could not launch updater:\n${e}`, icon: "critical" },
+      }));
+    }
+    // "started": the backend has spawned the updater and is quitting the app.
+    if (a.kind !== "started") await showBox(a.dialog);
+  } finally {
+    busy(false);
+    updating = false;
+  }
+}
+
 const handlers = {
   select,
   launch: (i) => launch(i),
@@ -483,7 +530,7 @@ async function main() {
 
   $("act-add").addEventListener("click", addFolder);
   $("act-settings").addEventListener("click", openSettings);
-  $("act-update").addEventListener("click", () => notImplemented("Updates")); // TODO(Task 12)
+  $("act-update").addEventListener("click", checkForUpdates);
 
   // Show only after the themed first frame is painted (no flash of unthemed content).
   // A hidden WebView2 may throttle rAF, so a short timeout backs it up.

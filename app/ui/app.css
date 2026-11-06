@@ -568,3 +568,6 @@ button, input { font: inherit; color: inherit; margin: 0; }
 }
 .color-input { position: absolute; left: 0; top: 0; width: 32px; height: 22px; opacity: 0; pointer-events: none; }
 .modal input.hex { width: 110px; align-self: start; margin-top: 2px; }
+
+/* Check for updates: request or download in flight (Python blocks the window meanwhile) */
+body.busy, body.busy * { cursor: progress !important; }

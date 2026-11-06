@@ -223,12 +223,10 @@ export function message(title, text, icon = null) {
   return messageBox(title, text, [["OK", undefined]], icon);
 }
 
-/** Yes/No question (QMessageBox.question); resolves true for Yes. */
-export function confirm(title, text) {
-  return messageBox(title, text, [["Yes", true], ["No", false]], "question");
-}
-
-/** Placeholder for toolbar actions that later tasks implement. */
-export function notImplemented(title) {
-  return message(title, "Not implemented yet");
+/**
+ * Yes/No question (QMessageBox.question); resolves true for Yes. `icon` "warning" is
+ * QMessageBox.warning with Yes|No buttons.
+ */
+export function confirm(title, text, icon = "question") {
+  return messageBox(title, text, [["Yes", true], ["No", false]], icon);
 }
