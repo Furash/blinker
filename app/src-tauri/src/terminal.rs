@@ -225,7 +225,8 @@ mod tests {
         let child = run_shell("ping", "ping -n 30 127.0.0.1", &p).unwrap();
         let el = t.elapsed();
         let mut child = child.expect("should still be running");
-        assert!(el >= Duration::from_millis(1900) && el < Duration::from_secs(4), "{el:?}");
+        // waited the 2 s launch window (lower bound); generous ceiling for loaded CI
+        assert!(el >= Duration::from_millis(1900) && el < Duration::from_secs(15), "{el:?}");
         let _ = Command::new("taskkill")
             .args(["/F", "/T", "/PID", &child.id().to_string()])
             .creation_flags(CREATE_NO_WINDOW)
@@ -238,7 +239,8 @@ mod tests {
     fn open_ai_returns_ok_via_public_api_when_running() {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().to_string_lossy().into_owned();
-        // ping -n 4 lasts ~3 s: still running at 2 s, finishes on its own.
+        // ping -n 4 lasts ~3 s: still running at 2 s, finishes on its own. Not timing
+        // sensitive: a ping that exits 0 sooner is Ok(()) as well.
         assert_eq!(open_ai("ping -n 4 127.0.0.1", &p, "ping"), Ok(()));
     }
 

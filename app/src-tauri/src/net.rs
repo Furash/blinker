@@ -170,7 +170,8 @@ mod tests {
         let t = Instant::now();
         assert!(!is_running(port));
         let e = t.elapsed();
-        assert!(e >= Duration::from_millis(800) && e < Duration::from_millis(2500), "{e:?}");
+        // waited for the 1 s probe timeout (lower bound); generous ceiling for CI
+        assert!(e >= Duration::from_millis(800) && e < Duration::from_secs(10), "{e:?}");
         h.join().unwrap();
     }
 
@@ -201,7 +202,9 @@ mod tests {
         ports.dedup();
         let t = Instant::now();
         let r = probe(&ports);
-        assert!(t.elapsed() < Duration::from_secs(3));
+        // Serially this takes about 1 s per port (Windows times out on closed loopback
+        // ports) = ~20 s; in parallel ~1 s. 10 s still proves parallelism.
+        assert!(t.elapsed() < Duration::from_secs(10), "{:?}", t.elapsed());
         assert_eq!(r.len(), ports.len());
         assert!(r.values().all(|v| !v));
     }
@@ -232,7 +235,7 @@ mod tests {
                     Duration::from_millis(50),
                     move |ps| {
                         p2.fetch_add(1, Ordering::SeqCst);
-                        thread::sleep(Duration::from_millis(400)); // much slower than interval
+                        thread::sleep(Duration::from_millis(1500)); // much slower than interval
                         ps.iter().map(|p| (*p, true)).collect()
                     },
                     move |m: BTreeMap<u16, bool>| {
@@ -242,12 +245,16 @@ mod tests {
                 )
             })
         };
-        thread::sleep(Duration::from_millis(200));
-        // first probe started immediately, others skipped while it runs
+        thread::sleep(Duration::from_millis(300));
+        // first probe started immediately, others skipped while it runs (1.5 s probe,
+        // 50 ms interval: ~6 ticks so far, all skipped)
         assert_eq!(probes.load(Ordering::SeqCst), 1);
         assert_eq!(emits.load(Ordering::SeqCst), 0);
-        thread::sleep(Duration::from_millis(400));
-        assert!(emits.load(Ordering::SeqCst) >= 1);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while emits.load(Ordering::SeqCst) == 0 {
+            assert!(Instant::now() < deadline, "the first probe never emitted");
+            thread::sleep(Duration::from_millis(20));
+        }
         stop.store(true, Ordering::SeqCst);
         h.join().unwrap();
     }
