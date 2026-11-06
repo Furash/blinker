@@ -12,6 +12,26 @@ pub fn decode_text(bytes: &[u8]) -> Result<String, String> {
     Ok(text.replace("\r\n", "\n").replace('\r', "\n"))
 }
 
+/// `bytes.decode("utf-8")`: strict UTF-8, no newline translation (the updater's
+/// `_http_json`).
+pub fn decode_utf8(bytes: &[u8]) -> Result<&str, String> {
+    std::str::from_utf8(bytes).map_err(|e| utf8_error(bytes, &e))
+}
+
+/// Python's type name for a JSON value (`'list' object has no attribute ...`).
+pub fn json_type_name(v: &serde_json::Value) -> &'static str {
+    use serde_json::Value;
+    match v {
+        Value::Null => "NoneType",
+        Value::Bool(_) => "bool",
+        Value::Number(n) if n.is_f64() => "float",
+        Value::Number(_) => "int",
+        Value::String(_) => "str",
+        Value::Array(_) => "list",
+        Value::Object(_) => "dict",
+    }
+}
+
 /// `UnicodeDecodeError` text. Rust reports the same maximal invalid prefix as CPython;
 /// a prefix that starts with a valid lead byte (C2-F4) failed on a continuation byte.
 fn utf8_error(bytes: &[u8], e: &std::str::Utf8Error) -> String {

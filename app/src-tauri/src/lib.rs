@@ -7,7 +7,9 @@ mod net;
 mod paths;
 mod pyerr;
 mod terminal;
+mod updater;
 mod theme;
+mod winhttp;
 
 use std::sync::{Arc, Mutex};
 
@@ -29,9 +31,53 @@ fn selftest() -> bool {
     true
 }
 
+/// `BlinkerUI.exe --update-selftest [--check-only] [--proceed-unverified]` (debug builds
+/// only): the "Check for updates" flow without a window, answering Yes to "Update
+/// available" (unless `--check-only`) and, with `--proceed-unverified`, Yes to "Proceed
+/// anyway?" (otherwise No). Prints one JSON line per step. When the updater starts,
+/// this process exits right away, so the script's `-WaitPid` sees it gone. Point `BLINKER_UPDATE_API` at a test server.
+#[cfg(debug_assertions)]
+fn update_selftest() -> bool {
+    let args: Vec<String> = std::env::args().collect();
+    if !args.iter().any(|a| a == "--update-selftest") {
+        return false;
+    }
+    let check = updater::check();
+    println!("check: {}", json(&check));
+    let updater::UpdateCheck::Available { offer, .. } = check else {
+        return true;
+    };
+    if args.iter().any(|a| a == "--check-only") {
+        return true;
+    }
+    let sha = offer.sha.as_ref();
+    let mut r = updater::apply(
+        offer.zip.url.as_deref(),
+        &offer.zip.name,
+        sha.and_then(|a| a.url.as_deref()),
+        sha.map(|a| a.name.as_str()),
+    );
+    println!("apply: {}", json(&r));
+    if let updater::ApplyResult::ShaUnverifiable { zip_path, .. } = &r {
+        if args.iter().any(|a| a == "--proceed-unverified") {
+            r = updater::continue_pending(zip_path);
+            println!("continue: {}", json(&r));
+        } else {
+            updater::cancel_pending(zip_path);
+            println!("cancel: deleted {zip_path}");
+        }
+    }
+    true
+}
+
+#[cfg(debug_assertions)]
+fn json<T: serde::Serialize>(v: &T) -> String {
+    serde_json::to_string(v).unwrap_or_default()
+}
+
 pub fn run() {
     #[cfg(debug_assertions)]
-    if selftest() {
+    if selftest() || update_selftest() {
         return;
     }
 
@@ -95,6 +141,10 @@ pub fn run() {
             commands::export_theme,
             commands::import_theme,
             commands::list_fonts,
+            commands::check_for_updates,
+            commands::apply_update,
+            commands::continue_update,
+            commands::cancel_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running BlinkerUI");

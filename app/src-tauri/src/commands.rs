@@ -12,7 +12,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::addons::{self, AddonKind};
 use crate::blender::{self, LaunchSpec, OutputSink, Supervisor};
 use crate::config::{self, Config, Folder};
-use crate::{net, terminal, theme};
+use crate::{net, terminal, theme, updater};
 
 /// Shared state managed by Tauri.
 pub struct AppState {
@@ -560,6 +560,57 @@ pub async fn import_theme(path: String) -> Result<theme::ImportedTheme, String> 
 #[tauri::command]
 pub async fn list_fonts() -> Result<Vec<String>, String> {
     tauri::async_runtime::spawn_blocking(crate::fonts::families).await.map_err(|e| e.to_string())
+}
+
+// ----- Check for updates (updater.rs; `_check_for_updates`) -----
+
+/// The check up to the "Update available" question: which message box to show.
+#[tauri::command]
+pub async fn check_for_updates() -> Result<updater::UpdateCheck, String> {
+    tauri::async_runtime::spawn_blocking(updater::check).await.map_err(|e| e.to_string())
+}
+
+/// After Yes: download the zip into `%TEMP%`, verify its SHA-256, start the updater
+/// script and quit (`QApplication.quit()`; running Blenders are closed as on window
+/// close). The URLs and names are the `offer` from `check_for_updates`.
+#[tauri::command]
+pub async fn apply_update(
+    app: AppHandle,
+    zip_url: Option<String>,
+    zip_name: String,
+    sha_url: Option<String>,
+    sha_name: Option<String>,
+) -> Result<updater::ApplyResult, String> {
+    let r = tauri::async_runtime::spawn_blocking(move || {
+        updater::apply(zip_url.as_deref(), &zip_name, sha_url.as_deref(), sha_name.as_deref())
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    quit_if_started(&app, &r);
+    Ok(r)
+}
+
+/// "Could not verify SHA256 ... Proceed anyway?" -> Yes.
+#[tauri::command]
+pub async fn continue_update(app: AppHandle, zip_path: String) -> Result<updater::ApplyResult, String> {
+    let r = tauri::async_runtime::spawn_blocking(move || updater::continue_pending(&zip_path))
+        .await
+        .map_err(|e| e.to_string())?;
+    quit_if_started(&app, &r);
+    Ok(r)
+}
+
+/// "Proceed anyway?" -> No: delete the downloaded zip.
+#[tauri::command]
+pub async fn cancel_update(zip_path: String) {
+    updater::cancel_pending(&zip_path);
+}
+
+fn quit_if_started(app: &AppHandle, r: &updater::ApplyResult) {
+    if matches!(r, updater::ApplyResult::Started) {
+        app.state::<AppState>().supervisor.shutdown();
+        app.exit(0);
+    }
 }
 
 /// Debug build? The UI keeps reload/devtools keys only in debug builds.
