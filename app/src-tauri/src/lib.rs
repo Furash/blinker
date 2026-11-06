@@ -6,6 +6,7 @@ mod fonts;
 mod net;
 mod paths;
 mod pyerr;
+mod startup;
 mod terminal;
 mod updater;
 mod theme;
@@ -179,12 +180,19 @@ pub fn run() {
     }
 
     timeline::mark("run");
+    // No WebView2 runtime: the webview cannot be created and, as a GUI app built with
+    // panic=abort, the app would just vanish. Say so with the download link instead.
+    if !startup::webview2_installed(startup::read_pv_registry) {
+        startup::error_box(&startup::missing_webview2_text(), true);
+        std::process::exit(1);
+    }
+    timeline::mark("webview2_check");
     set_app_user_model_id();
 
     // Single instance first: the plugin's setup runs before the window is created, so a
     // second launch exits right there, before any config work, migration or poller.
     // (Its own identifier: not the Python app's mutex/wake file, so both can coexist.)
-    tauri::Builder::default()
+    let result = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(w) = app.get_webview_window("main") {
                 bring_to_front(&w);
@@ -223,6 +231,18 @@ pub fn run() {
                 let _ = w.set_title(&format!("Blinker UI  v{}", env!("CARGO_PKG_VERSION")));
             }
             net::start_poller(app.handle().clone(), ports);
+            // If the frontend never shows the window (failed to load, hung before
+            // showWindow), show it anyway after a while.
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(startup::FALLBACK_SHOW_AFTER);
+                if let Some(w) = handle.get_webview_window("main") {
+                    let ready = WINDOW_READY.load(std::sync::atomic::Ordering::SeqCst);
+                    if startup::fallback_should_show(ready, w.is_visible().unwrap_or(false)) {
+                        let _ = w.show();
+                    }
+                }
+            });
             timeline::mark("setup_done");
             Ok(())
         })
@@ -262,8 +282,11 @@ pub fn run() {
             commands::continue_update,
             commands::cancel_update,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running BlinkerUI");
+        .run(tauri::generate_context!());
+    if let Err(e) = result {
+        startup::error_box(&startup::startup_error_text(&e.to_string()), false);
+        std::process::exit(1);
+    }
 }
 
 #[cfg(test)]
