@@ -16,6 +16,23 @@ export function listen(event, cb) {
   return mock ? mock.listen(event, cb) : T.event.listen(event, cb);
 }
 
+/**
+ * Run a native picker; if it fails (plugin/IPC error) show the error in the themed
+ * message box and resolve to null like a cancelled dialog, so no caller is left with an
+ * unhandled rejection.
+ */
+async function guardPicker(title, run) {
+  try {
+    return await run();
+  } catch (e) {
+    const { message } = await import("./dialog.js");
+    const text = e && typeof e === "object" ? e.message ?? JSON.stringify(e) : String(e);
+    await message(title, `Could not open the file dialog:
+${text}`, "critical");
+    return null;
+  }
+}
+
 /** Show the (initially hidden) main window. */
 export async function showWindow() {
   if (!mock) await T.window.getCurrentWindow().show();
@@ -27,7 +44,7 @@ export async function showWindow() {
  */
 export async function pickFolder(title, defaultPath = "") {
   if (mock) return mock.pick("folder", { title, defaultPath });
-  const r = await T.dialog.open({ directory: true, multiple: false, title, defaultPath: defaultPath || undefined });
+  const r = await guardPicker(title, () => T.dialog.open({ directory: true, multiple: false, title, defaultPath: defaultPath || undefined }));
   return typeof r === "string" && r ? r : null;
 }
 
@@ -37,7 +54,7 @@ export async function pickFolder(title, defaultPath = "") {
  */
 export async function pickFile(title, filters = [], defaultPath = "") {
   if (mock) return mock.pick("file", { title, filters, defaultPath });
-  const r = await T.dialog.open({ directory: false, multiple: false, title, filters, defaultPath: defaultPath || undefined });
+  const r = await guardPicker(title, () => T.dialog.open({ directory: false, multiple: false, title, filters, defaultPath: defaultPath || undefined }));
   return typeof r === "string" && r ? r : null;
 }
 
@@ -47,7 +64,7 @@ export async function pickFile(title, filters = [], defaultPath = "") {
  */
 export async function pickSaveFile(title, filters = [], defaultPath = "") {
   if (mock) return mock.pick("save", { title, filters, defaultPath });
-  const r = await T.dialog.save({ title, filters, defaultPath: defaultPath || undefined });
+  const r = await guardPicker(title, () => T.dialog.save({ title, filters, defaultPath: defaultPath || undefined }));
   return typeof r === "string" && r ? r : null;
 }
 
