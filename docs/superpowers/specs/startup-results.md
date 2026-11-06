@@ -12,7 +12,10 @@ Builds measured:
   a scratch folder; the repo's `dist\BlinkerUI` dated 2026-05-04 was older than the last
   two `blinker_ui.py` commits). 24 MB, 79 binaries.
 - **New**: Tauri release exe built from commit `8e35a44` (4.7 MB, `opt-level="s"`, LTO,
-  strip). `docs` commits after it do not change the exe.
+  strip). The commits after it change only a test and docs. The exe rebuilt from the
+  final commit is not byte-identical (the build is not reproducible), so it was checked
+  again: the full live walk below passed (23/23), warm visible 690, 1328, 882, 1059,
+  672 ms (median 882; measured while a Steam Blender was running on the machine).
 
 Same config for both: the three folders of `tools/grab_reference.py` (default Tokyo
 theme). Old: config next to its exe (scratch copy); new: `BLINKER_CONFIG_DIR`.
