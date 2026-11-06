@@ -42,6 +42,8 @@ pub fn run() {
     }
 
     tauri::Builder::default()
+        // Native folder/file pickers (`open` only; capability `dialog:allow-open`).
+        .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
             let cfg = config::load(&config_path);
             let ports = Arc::new(Mutex::new(cfg.folders.iter().map(|f| f.port).collect::<Vec<_>>()));
