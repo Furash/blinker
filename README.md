@@ -213,6 +213,22 @@ measured with [tools/detect_window_paint.py](tools/detect_window_paint.py)).
 - Development: `BLINKER_CONFIG_DIR=<dir>` uses `<dir>\blinker_ui_config.json` instead
   (no migration), so test runs never touch the real config.
 
+### Updating
+
+When you confirm an update (Yes in **Check for updates** -> "Update available"), the app
+first backs up your settings to
+`%APPDATA%\BlinkerUI\backups\pre-update-<version>-<date-time>\` (the config, its `.bak`,
+custom icons, and a config or `icons\` found in the install folder; the last 5 backups are
+kept). If that backup fails, the update is not started. The previous version stays next to
+the install folder as `<install folder>.prev` (e.g. `D:\BlinkerUI.prev`); to roll back,
+close the app, delete the install folder and rename `.prev` back. Custom icons in the
+install folder's `icons\` are carried forward into the new version. If the update fails
+after the swap, the previous version is restored and started automatically.
+
+This fail-safe (backup, `.prev`, rollback) only applies to updates performed by a
+version that contains it: the update from v0.2.1 to the first release with it still runs
+v0.2.1's own updater.
+
 ### Upgrading from the Python version (v0.1.x)
 
 The Python app's **Update** button replaces its install folder and deletes the old one,

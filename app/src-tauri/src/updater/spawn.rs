@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use crate::pyerr;
 
-use super::{SCRIPT_NAME, UPDATER_PS1};
+use super::{updater_script_text, SCRIPT_NAME};
 
 /// `str(OSError)` as Python's subprocess shows it on Windows: `[WinError N] text`.
 fn win_error(e: &std::io::Error) -> String {
@@ -44,12 +44,12 @@ pub fn powershell_path(system_root: Option<std::ffi::OsString>, exists: impl Fn(
         .unwrap_or_else(|| PathBuf::from("powershell.exe"))
 }
 
-/// `_spawn_updater`: write `UPDATER_PS1` to `%TEMP%\blinker_updater.ps1` (UTF-8, CRLF:
+/// `_spawn_updater`: write `UPDATER_PS1` (this app's v2 script, script.rs) to `%TEMP%\blinker_updater.ps1` (UTF-8, CRLF:
 /// Python's `write_text` on Windows) and start it in the background; it waits for `pid`
 /// to exit.
 pub fn spawn_updater(zip: &Path, install: &Path, exe: &Path, pid: u32) -> Result<(), String> {
     let script = std::env::temp_dir().join(SCRIPT_NAME);
-    std::fs::write(&script, UPDATER_PS1.replace('\n', "\r\n")).map_err(|e| pyerr::os_error(&e, &script))?;
+    std::fs::write(&script, updater_script_text()).map_err(|e| pyerr::os_error(&e, &script))?;
     let mut cmd = std::process::Command::new(powershell_path(std::env::var_os("SystemRoot"), Path::is_file));
     cmd.args(updater_args(&script, pid, zip, install, exe))
         .stdin(std::process::Stdio::null())

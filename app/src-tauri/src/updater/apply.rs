@@ -4,7 +4,8 @@ use std::sync::Mutex;
 use serde::Serialize;
 
 use super::{
-    apply_offer, dialog, local_http_ok, spawn_updater_for_self, take_offer, Dialog, Icon, Verified,
+    apply_offer, backup_before_update, dialog, local_http_ok, spawn_updater_for_self, take_offer, Dialog, Icon, Verified,
+    VERSION,
 };
 
 /// `apply_update` / `continue_update` result: Started (the app then exits) or the
@@ -18,6 +19,8 @@ pub enum ApplyResult {
     /// Yes/No "Proceed anyway?": Yes -> `continue_update(zip_path)`, No -> `cancel_update`
     ShaUnverifiable { zip_path: String, dialog: Dialog },
     LaunchFailed { dialog: Dialog },
+    /// The pre-update backup of the settings failed; the updater was not started.
+    BackupFailed { dialog: Dialog },
 }
 
 /// The zip waiting for the user's "Proceed anyway?" answer.
@@ -79,6 +82,39 @@ pub fn launch_result(zip: &Path, spawn: impl FnOnce(&Path) -> Result<(), String>
     }
 }
 
+/// Back up the settings (`backup`), then start the updater for `zip` (`spawn`).
+pub fn start_update(
+    zip: &Path,
+    backup: impl FnOnce() -> Result<PathBuf, String>,
+    spawn: impl FnOnce(&Path) -> Result<(), String>,
+) -> ApplyResult {
+    if let Err(e) = backup() {
+        // Delete the zip so it does not stay behind in %TEMP%. This includes the
+        // "Proceed anyway?" zip of `continue_pending`: it was already taken out of PENDING,
+        // and keeping it pending would change nothing, because the next Check for updates
+        // -> `apply()` deletes a pending zip anyway (`set_pending(None)`).
+        let _ = std::fs::remove_file(zip);
+        return ApplyResult::BackupFailed {
+            dialog: dialog(
+                "Updates",
+                Icon::Critical,
+                format!("Could not back up your settings before updating:\n{e}\n\nThe update was not started."),
+            ),
+        };
+    }
+    launch_result(zip, spawn)
+}
+
+/// The pre-update backup for this process: install dir = the exe's folder, config dir =
+/// the folder of the config in use (`%APPDATA%\BlinkerUI` or `BLINKER_CONFIG_DIR`).
+pub fn backup_for_self() -> Result<PathBuf, String> {
+    let exe = std::env::current_exe().map_err(|e| format!("could not find the executable: {e}"))?;
+    let install = exe.parent().ok_or("the executable has no parent directory")?;
+    let config = crate::paths::config_path();
+    let config_dir = config.parent().ok_or("the config path has no parent directory")?;
+    backup_before_update(install, config_dir, VERSION, std::time::SystemTime::now())
+}
+
 /// `apply_update` (blocking): download the offer of the last check into `%TEMP%`,
 /// verify, start the updater. A zip still waiting for "Proceed anyway?" is deleted.
 pub fn apply() -> ApplyResult {
@@ -88,14 +124,17 @@ pub fn apply() -> ApplyResult {
             dialog: dialog("Updates", Icon::Critical, "Download failed:\nno update is pending; check for updates first".into()),
         };
     };
-    let v = apply_offer(&offer, &std::env::temp_dir(), local_http_ok());
-    verified_result(v, spawn_updater_for_self)
+    match apply_offer(&offer, &std::env::temp_dir(), local_http_ok()) {
+        // backup first: on failure the updater is not started
+        Verified::Ready(zip) => start_update(&zip, backup_for_self, spawn_updater_for_self),
+        v => verified_result(v, spawn_updater_for_self),
+    }
 }
 
 /// "Proceed anyway?" -> Yes.
 pub fn continue_pending(zip_path: &str) -> ApplyResult {
     match take_pending(zip_path) {
-        Some(zip) => launch_result(&zip, spawn_updater_for_self),
+        Some(zip) => start_update(&zip, backup_for_self, spawn_updater_for_self),
         None => ApplyResult::LaunchFailed {
             dialog: dialog("Updates", Icon::Critical, "Could not launch updater:\nno downloaded update is pending".into()),
         },
@@ -157,6 +196,49 @@ mod tests {
         let ApplyResult::LaunchFailed { dialog: dg } = r else { panic!() };
         assert_eq!(dg.text, "Could not launch updater:\n[WinError 2] nope");
         assert_eq!(verified_result(Verified::Ready("z.zip".into()), |_| Ok(())), ApplyResult::Started);
+    }
+
+    #[test]
+    fn a_failed_backup_does_not_start_the_updater_and_deletes_the_zip() {
+        let z = file_with(b"zip");
+        let zip = z.path().to_path_buf();
+        let mut spawned = false;
+        let r = start_update(&zip, || Err(r"could not create C:\cfg\backups: denied".into()), |_| {
+            spawned = true;
+            Ok(())
+        });
+        assert!(!spawned, "updater not started");
+        let ApplyResult::BackupFailed { dialog: dg } = r else { panic!("{r:?}") };
+        assert_eq!(dg.title, "Updates");
+        assert_eq!(dg.icon, Icon::Critical);
+        assert_eq!(
+            dg.text,
+            "Could not back up your settings before updating:\ncould not create C:\\cfg\\backups: denied\n\nThe update was not started."
+        );
+        assert!(!zip.exists(), "zip deleted");
+    }
+
+    #[test]
+    fn the_backup_runs_before_the_updater_starts() {
+        let order = std::cell::RefCell::new(Vec::new());
+        let r = start_update(
+            Path::new("z.zip"),
+            || {
+                order.borrow_mut().push("backup");
+                Ok(PathBuf::from("b"))
+            },
+            |_| {
+                order.borrow_mut().push("spawn");
+                Ok(())
+            },
+        );
+        assert_eq!(r, ApplyResult::Started);
+        assert_eq!(*order.borrow(), ["backup", "spawn"]);
+        let r = start_update(Path::new("z.zip"), || Ok(PathBuf::from("b")), |_| Err("nope".into()));
+        let ApplyResult::LaunchFailed { dialog: dg } = r else { panic!() };
+        assert_eq!(dg.text, "Could not launch updater:\nnope");
+        let json = serde_json::to_value(ApplyResult::BackupFailed { dialog: dialog("Updates", Icon::Critical, "x".into()) }).unwrap();
+        assert_eq!(json["kind"], "backup_failed");
     }
 
     #[test]

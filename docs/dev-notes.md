@@ -10,6 +10,9 @@
 | `BLINKER_TEST_FORCE_NO_WINDOW` | `cargo test` only: the windowed stand-in Blender reports that it cannot create a window, so the two windowed Supervisor tests take their SKIP path (as on a runner without a desktop). |
 | `BLENDER_PATH` | Extra candidate for Blender auto-discovery (as in the Python UI). |
 | `BLINKER_UPDATE_API` | **Debug builds only** (ignored by release builds, `#[cfg(debug_assertions)]`). Replaces the release URL `https://api.github.com/repos/Furash/blinker/releases/latest` used by Check for updates. While it is set, release and asset URLs may also be `http://127.0.0.1[:port]/...` (a local test server); otherwise only `https://` URLs are fetched. Without it a debug build answers "Running from source" like the unfrozen Python app. |
+| `BLINKER_UPDATE_TEMP` | Read by the updater script (`blinker_updater.ps1`, script.rs): folder for its stage folder (`blinker_update_stage`) and `blinker_update.log` instead of `%TEMP%`, so tests do not collide with each other or with a real update. |
+| `BLINKER_UPDATE_FORCE_COPY` | Read by the updater script: copy the staged folder into place (`Copy-Item -Recurse`) instead of trying `Move-Item` first. Without it the script only copies when `Move-Item` fails before creating the destination: a rarely used safety net, because on Windows PowerShell 5.1 a cross-volume `Move-Item` of a folder normally succeeds (PowerShell copies and deletes by itself). A move that fails part-way is treated as a failure and rolled back. Tests use the variable to cover the copy path. |
+| `BLINKER_UPDATE_NO_UI` | Read by the updater script: on failure, log the message (`message box skipped (BLINKER_UPDATE_NO_UI): ...`) instead of showing the "BlinkerUI update failed" box, so automated runs never block. |
 
 ## Import Config test
 
@@ -52,3 +55,25 @@ End-to-end recipe (never on the real install or config): copy a debug v0.1.0 bui
 and `TEMP`/`TMP=<scratch>\tmp` (the script, the zip, the stage folder and
 `blinker_update.log` go to `%TEMP%`). Setting `BLINKER_READY_LOG` as well shows that the
 relaunched app opened its window.
+
+Before the updater starts, the settings are backed up to
+`<config dir>\backups\pre-update-<version>-<UTC stamp>\` (updater/backup.rs; with
+`BLINKER_CONFIG_DIR` set that is `<BLINKER_CONFIG_DIR>\backups`). If the backup fails
+(e.g. a file named `backups` in the config dir), `apply:` prints `backup_failed` and
+the updater is not started.
+
+## Updater script test
+
+`cargo test --locked updater::script` (Windows) runs the real `blinker_updater.ps1` with
+`powershell.exe` against temp folders: a fake release zip (written by the test, with a
+copy of `whoami.exe` as `BlinkerUI.exe`), a pid that cannot exist (no wait),
+`BLINKER_UPDATE_TEMP` = a temp folder and `BLINKER_UPDATE_NO_UI=1`. It checks:
+- the good update (swap, `.prev`, carried icons, a junction in `icons\` not followed, cleanup), also with `BLINKER_UPDATE_FORCE_COPY=1`;
+- a zip without the exe (nothing changes);
+- a new exe that cannot be started (rollback via `<install>.failed`);
+- a failed copy into place (rollback);
+- a cross-volume move that fails part-way (rollback, no copy). This one only runs when `app\src-tauri\target` is on another volume than `%TEMP%`, and is otherwise skipped;
+- a failed install that cannot be deleted (moved aside, old one restored, `.failed` left);
+- a log file locked by another process (update and rollback still work).
+
+The copy and delete failures are induced with inheritable deny ACEs for Everyone (`icacls`), which are removed again when the test ends. The tests take a few seconds in total; a hung script is killed after 60 s.
