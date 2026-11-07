@@ -2,9 +2,9 @@
 // {path, port, repo, module, blend} on OK (EditFolderDialog.accept: no validation
 // besides the spin box range), null on Cancel/Esc. The folder itself is not touched.
 
-import { openDialog, pushButton, buttonBox } from "./dialog.js";
+import { openDialog, pushButton, buttonBox, message } from "./dialog.js";
 import { portSpin } from "./rows.js";
-import { editResult, spinValue, blendStart } from "./logic.js";
+import { editResult, spinValue, blendStart, portTakenText } from "./logic.js";
 import { pickFolder, pickFile } from "./api.js";
 
 const el = (tag, cls, text) => {
@@ -27,8 +27,10 @@ function lineEdit(value) {
  * `portLocked`: the folder is running. Like the row's port box (rows.js), the port
  * cannot change while a supervised Blender runs on it (deviation from Python: the Rust
  * Supervisor keys the process by its port).
+ * `portOwner(port)`: the other folder using `port`, or null. Ports are unique, so OK
+ * refuses a taken port and keeps the dialog open (Python had no such check).
  */
-export function editDialog(folder, { portLocked = false } = {}) {
+export function editDialog(folder, { portLocked = false, portOwner = () => null } = {}) {
   const pathE = lineEdit(folder.path);
   const repoE = lineEdit(folder.repo);
   const moduleE = lineEdit(folder.module);
@@ -72,13 +74,23 @@ export function editDialog(folder, { portLocked = false } = {}) {
   let dlg;
   const ok = () => {
     if (busy) return;
-    dlg.close(editResult({
+    const res = editResult({
       path: pathE.value,
       port: spinValue(spinInput.value, Number(spin.dataset.port)),
       repo: repoE.value,
       module: moduleE.value,
       blend: blendE.value,
-    }));
+    });
+    const owner = portOwner(res.port);
+    if (owner) {
+      busy = true; // one message at a time; OK/Enter wait for it
+      message("Port", portTakenText(res.port, owner), "warning").finally(() => {
+        busy = false;
+        spinInput.focus();
+      });
+      return;
+    }
+    dlg.close(res);
   };
   const cancel = () => { if (!busy) dlg.close(null); };
   dlg = openDialog({

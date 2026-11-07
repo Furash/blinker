@@ -11,6 +11,7 @@ import { settingsDialog } from "./settings.js";
 import {
   parseAliases, sortFavouritesFirst, selectionAfterRemove, runningFromStatus, SaveQueue, ConsoleFeed,
   appendFolders, importConfirmText, importDoneText, replaceWithSavesPaused,
+  portOwner, dedupePorts, dedupeText, portTakenText,
 } from "./logic.js";
 
 // Startup steps (epoch ms) for the BLINKER_READY_LOG timeline (report_ready).
@@ -250,6 +251,15 @@ async function openAi(idx, ai) {
 function changePort(idx, port) {
   const f = folders()[idx];
   if (!f || f.port === port) return;
+  const owner = portOwner(folders(), port, f);
+  if (owner) {
+    // Put the old port back (updateRow leaves a focused box alone, so set it here).
+    updateRow(listEl, state, idx, handlers);
+    const input = listEl.querySelector(`.row[data-idx="${idx}"] .spin input`);
+    if (input) input.value = String(f.port);
+    message("Port", portTakenText(port, owner), "warning");
+    return;
+  }
   f.port = port;
   portMoved(f);
   save();
@@ -293,7 +303,10 @@ async function addFolder() {
 async function editFolder(idx) {
   const f = folders()[idx];
   if (!f) return;
-  const res = await editDialog(f, { portLocked: !!state.running.get(f.port) });
+  const res = await editDialog(f, {
+    portLocked: !!state.running.get(f.port),
+    portOwner: (port) => portOwner(folders(), port, f),
+  });
   if (!res || !folders().includes(f)) return;
   const portChanged = res.port !== f.port;
   Object.assign(f, res);
@@ -403,8 +416,9 @@ async function importConfig() {
       await message("Import Config", errText(e), "critical");
       return;
     }
-    await refreshAfterImport();
-    await message("Import Config", importDoneText(cfg.folders.length), "information");
+    const moves = await refreshAfterImport();
+    const done = importDoneText(cfg.folders.length);
+    await message("Import Config", moves.length ? `${done}\n\n${dedupeText(moves)}` : done, "information");
   } finally {
     importing = false;
   }
@@ -428,11 +442,14 @@ function swapConfig(cfg) {
 
 /** Redraw for the swapped-in config (saves are live again: edits made now are kept). */
 async function refreshAfterImport() {
+  const moves = dedupePorts(folders());
+  if (moves.length) save();
   applyTheme(state.config.theme);
   await syncPorts();
   await loadIcons(state.config.ai_aliases);
   refreshRows();
   pollNow();
+  return moves;
 }
 
 // ---------- Check for updates (`_check_for_updates`; texts and branches: updater.rs) ----------
@@ -586,6 +603,10 @@ async function main() {
     defaults: { theme: st.default_theme, terminal: st.default_terminal, ai_aliases: st.default_ai_aliases },
   };
   $("config-label").textContent = `Config: ${st.config_path}`;
+  // Configs from before ports were unique (or edited by hand) may share ports: fix them
+  // once, save, and tell the user after the window is shown.
+  const portMoves = dedupePorts(folders());
+  if (portMoves.length) save();
   state.running = runningFromStatus(folders().map((f) => f.port), st.running || {});
   state.selected = folders().length ? 0 : null;
   if (mockScenario && mockScenario.selected !== null && mockScenario.selected < folders().length) {
@@ -627,6 +648,7 @@ async function main() {
   // Mock mode: headless screenshot browsers resize the viewport after load; keep the
   // initial proportion so captures match the Qt reference.
   shown = !isMock;
+  if (portMoves.length) message("Ports", dedupeText(portMoves), "information");
   // Mock screenshots: open a dialog (canned picks, see mock.js).
   const d = mockScenario && mockScenario.dialog;
   if (d === "scan" || d === "noaddons") addFolder();

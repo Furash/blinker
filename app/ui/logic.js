@@ -73,6 +73,51 @@ export function nextPort(folders) {
 }
 
 /**
+ * Ports are unique per folder (deviation from Python, which allowed duplicates: two
+ * folders on one port cannot run at the same time, and removing one closed the other's
+ * Blender). The folder other than `self` that uses `port`, or null.
+ */
+export function portOwner(folders, port, self = null) {
+  return folders.find((f) => f !== self && f.port === port) ?? null;
+}
+
+/**
+ * Give every folder a port no earlier folder uses: the first folder keeps a shared port,
+ * later ones move to the lowest free port >= PORT_BASE (like `nextPort`). Mutates the
+ * folders; returns the moves as [{path, from, to}] (empty when the ports were unique).
+ */
+export function dedupePorts(folders) {
+  const used = new Set(folders.map((f) => f.port));
+  const seen = new Set();
+  const moves = [];
+  for (const f of folders) {
+    if (!seen.has(f.port)) {
+      seen.add(f.port);
+      continue;
+    }
+    let p = PORT_BASE;
+    while (used.has(p) && p <= PORT_MAX) p++;
+    if (p > PORT_MAX) continue; // no free port left: keep it, the launch will refuse
+    moves.push({ path: f.path, from: f.port, to: p });
+    f.port = p;
+    used.add(p);
+    seen.add(p);
+  }
+  return moves;
+}
+
+/** Message after `dedupePorts` moved folders. */
+export function dedupeText(moves) {
+  const lines = moves.map((m) => `  ${m.path}: ${m.from} → ${m.to}`);
+  return `Each folder needs its own port. These folders shared a port and were moved:\n\n${lines.join("\n")}`;
+}
+
+/** Edit / port box: refusal text when `port` belongs to another folder. */
+export function portTakenText(port, owner) {
+  return `Port ${port} is already used by:\n${owner.path}\n\nPick another port.`;
+}
+
+/**
  * Path key for "already added" checks: `str(Path(p).resolve())` compared on Windows,
  * where resolve() also yields the on-disk case. Separators unified, `.`/`..` resolved,
  * trailing separator dropped, case folded. (Symlinks/junctions are not resolved.)
