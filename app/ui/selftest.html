@@ -12,7 +12,8 @@
 import { metaText, baseName, sortFavouritesFirst, parseAliases, capLines, parsePort,
   selectionAfterRemove, nextPort, textAfterSnapshot, runningFromStatus, SaveQueue, ConsoleFeed,
   pathKey, addonLabel, scanItems, checkedAddons, setAllChecked, appendFolders, editResult, spinValue, blendStart,
-  parseSpin, commitSettings, importNotes, completeFrom, importConfirmText, importDoneText, replaceWithSavesPaused } from "./logic.js";
+  parseSpin, commitSettings, importNotes, completeFrom, importConfirmText, importDoneText, replaceWithSavesPaused,
+  portOwner, dedupePorts, dedupeText, portTakenText } from "./logic.js";
 import { invoke, isMock } from "./api.js";
 import { OutputPane } from "./output.js";
 
@@ -155,6 +156,29 @@ check("status missing port is false", [...runningFromStatus([1, 2, 3], { 1: true
 // Task 10: add / scan / edit (pure parts)
 check("next port skips used and fills gaps", nextPort([{ port: 9876 }, { port: 9877 }, { port: 9879 }]), 9878);
 check("next port empty", nextPort([]), 9876);
+
+// unique ports
+{
+  const a = { path: "A", port: 9876 }, b = { path: "B", port: 9877 };
+  check("port owner: other folder", portOwner([a, b], 9877, a), b);
+  check("port owner: self ignored", portOwner([a, b], 9876, a), null);
+  check("port owner: free", portOwner([a, b], 9999, a), null);
+  // the owner's real config shape: two folders on 9910, 9876/9877 taken
+  const fs = [
+    { path: "gr2", port: 9910 }, { path: "unwrap", port: 9910 }, { path: "snap", port: 9876 },
+    { path: "cable", port: 9877 }, { path: "x", port: 9910 },
+  ];
+  const moves = dedupePorts(fs);
+  check("dedupe: first keeps the shared port", fs[0].port, 9910);
+  check("dedupe: later ones take the lowest free ports", fs.map((f) => f.port), [9910, 9878, 9876, 9877, 9879]);
+  check("dedupe: moves reported", moves, [{ path: "unwrap", from: 9910, to: 9878 }, { path: "x", from: 9910, to: 9879 }]);
+  check("dedupe: unique result", new Set(fs.map((f) => f.port)).size, fs.length);
+  check("dedupe: unique input untouched", dedupePorts([{ path: "a", port: 1 }, { path: "b", port: 2 }]), []);
+  check("dedupe: empty", dedupePorts([]), []);
+  check("dedupe text", dedupeText([{ path: "D:/x", from: 9910, to: 9878 }]),
+    "Each folder needs its own port. These folders shared a port and were moved:\n\n  D:/x: 9910 → 9878");
+  check("port taken text", portTakenText(9877, b), "Port 9877 is already used by:\nB\n\nPick another port.");
+}
 {
   const fl = [{ path: "D:/a", port: 9876 }];
   const sel = appendFolders(fl, ["D:\\b", "D:\\c"]);

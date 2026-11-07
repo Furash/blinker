@@ -153,7 +153,8 @@ button, input { font: inherit; color: inherit; margin: 0; }
 .row .fav-btn { font-size: round(calc((var(--ui_font_size, 10) + 2) * 4px / 3), 1px); color: var(--row_meta_fg); }
 .row .fav-btn.on { color: #f1c40f; }
 .row .icon-btn { width: 40px; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
-.row .icon-btn img { width: 18px; height: 18px; display: block; }
+.row .icon-btn img,
+.row .icon-btn svg { width: 18px; height: 18px; display: block; }
 
 /* QSpinBox */
 .spin {

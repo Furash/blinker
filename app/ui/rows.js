@@ -1,7 +1,7 @@
 // Folder rows (FolderRow, blinker_ui.py:854-1028).
 // Visual order is Qt's layout order: dot, path, meta, stretch, "port", spin box,
 // [btn_row: Launch/Kill, Reload, Restart, Clear console, │, AI aliases], fav,
-// Open folder (new), Edit, ✕.
+// Open folder (new, folder icon), Edit (cog icon), ✕.
 
 import { metaText, parseAliases, parseSpin, PORT_MIN, PORT_MAX } from "./logic.js";
 
@@ -11,6 +11,39 @@ const el = (tag, cls, text) => {
   if (text !== undefined) e.textContent = text;
   return e;
 };
+
+// Stroke icons (Lucide, ISC licence): drawn in the button's text colour, so they follow
+// the theme. Built with DOM APIs (no innerHTML).
+const SVG_NS = "http://www.w3.org/2000/svg";
+const ICONS = {
+  folder: [["path", { d: "M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2h8.5A1.5 1.5 0 0 1 21 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z" }]],
+  cog: [
+    ["path", { d: "M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" }],
+    ["circle", { cx: "12", cy: "12", r: "3" }],
+  ],
+};
+
+function svgIcon(name) {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  for (const [k, v] of Object.entries({
+    viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", "stroke-width": "2",
+    "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true",
+  })) svg.setAttribute(k, v);
+  for (const [tag, attrs] of ICONS[name]) {
+    const e = document.createElementNS(SVG_NS, tag);
+    for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+    svg.append(e);
+  }
+  return svg;
+}
+
+/** A 40 px icon-only button (like the AI icon buttons); `title` is its tooltip and label. */
+function iconButton(icon, title, onClick) {
+  const b = button("", onClick, { cls: "icon-btn", title });
+  b.setAttribute("aria-label", title);
+  b.append(svgIcon(icon));
+  return b;
+}
 
 function button(text, onClick, opts = {}) {
   const b = el("button", opts.cls, text);
@@ -185,8 +218,8 @@ export function buildRow(folder, idx, ctx) {
   row.append(
     dot, path, meta, portLbl, spin, btns,
     favButton(idx, !!folder.favourite, h),
-    button("Open folder", () => h.openFolder(idx), { title: "Open folder in Explorer" }),
-    button("Edit", () => h.edit(idx)),
+    iconButton("folder", "Open folder in Explorer", () => h.openFolder(idx)),
+    iconButton("cog", "Edit", () => h.edit(idx)),
     button("✕", () => h.remove(idx), { cls: "remove-btn" }),
   );
   return row;
