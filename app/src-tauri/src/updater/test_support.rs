@@ -55,6 +55,62 @@ use crate::updater::{sha256_hex, Asset, Offer};
         }
     }
 
+    /// A zip archive with `entries` (name -> bytes; a name ending in `/` is a folder),
+    /// stored without compression (enough for `Expand-Archive`).
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn stored_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        fn crc32(data: &[u8]) -> u32 {
+            let mut c = 0xFFFF_FFFFu32;
+            for &b in data {
+                c ^= u32::from(b);
+                for _ in 0..8 {
+                    c = if c & 1 != 0 { (c >> 1) ^ 0xEDB8_8320 } else { c >> 1 };
+                }
+            }
+            !c
+        }
+        let (mut out, mut central) = (Vec::new(), Vec::new());
+        for (name, data) in entries {
+            let (crc, len, offset) = (crc32(data), data.len() as u32, out.len() as u32);
+            let attrs: u32 = if name.ends_with('/') { 0x10 } else { 0 };
+            // local file header: version 20, no flags, method 0 (stored), time/date 0:00 1.1.1980
+            out.extend_from_slice(&0x0403_4b50u32.to_le_bytes());
+            for v in [20u16, 0, 0, 0, 0x21] {
+                out.extend_from_slice(&v.to_le_bytes());
+            }
+            for v in [crc, len, len] {
+                out.extend_from_slice(&v.to_le_bytes());
+            }
+            out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(name.as_bytes());
+            out.extend_from_slice(data);
+            central.extend_from_slice(&0x0201_4b50u32.to_le_bytes());
+            for v in [20u16, 20, 0, 0, 0, 0x21] {
+                central.extend_from_slice(&v.to_le_bytes());
+            }
+            for v in [crc, len, len] {
+                central.extend_from_slice(&v.to_le_bytes());
+            }
+            for v in [name.len() as u16, 0, 0, 0, 0] {
+                central.extend_from_slice(&v.to_le_bytes());
+            }
+            central.extend_from_slice(&attrs.to_le_bytes());
+            central.extend_from_slice(&offset.to_le_bytes());
+            central.extend_from_slice(name.as_bytes());
+        }
+        let (cd_offset, cd_len, n) = (out.len() as u32, central.len() as u32, entries.len() as u16);
+        out.extend_from_slice(&central);
+        out.extend_from_slice(&0x0605_4b50u32.to_le_bytes());
+        for v in [0u16, 0, n, n] {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        out.extend_from_slice(&cd_len.to_le_bytes());
+        out.extend_from_slice(&cd_offset.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out
+    }
+
     /// Tests that touch the process-wide PENDING / OFFER state run one at a time.
     pub static GLOBALS: Mutex<()> = Mutex::new(());
 

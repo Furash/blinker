@@ -3,17 +3,21 @@
 //! `MainWindow._check_for_updates` (1577-1665), with the Python dialog texts. HTTP is
 //! WinHTTP (winhttp.rs) as in Python; SHA-256 is the OS's CNG (BCrypt).
 //!
-//! Compatibility with installs of the old Python app: the PowerShell script below is
-//! byte-for-byte the one those installs write and run. It expands the release zip, takes
-//! the zip's first directory (`BlinkerUI/`) as the new install folder, swaps it with the
-//! install dir and starts `<install>\<exe leaf name>` (`BlinkerUI.exe`). The config lives
-//! in `%APPDATA%\BlinkerUI` (paths.rs), outside the swapped folder.
+//! Updater script (script.rs, v2): same parameters, zip layout and log as the Python
+//! app's script (old installs keep running their own copy from blinker_ui.py). It expands
+//! the release zip, takes the zip's first directory (`BlinkerUI/`) as the new install
+//! folder, swaps it with the install dir and starts `<install>\<exe leaf name>`
+//! (`BlinkerUI.exe`); fail-safe: the previous install stays as `<install>.prev`, user
+//! icons are carried forward and any failure after the swap rolls back. The config lives
+//! in `%APPDATA%\BlinkerUI` (paths.rs), outside the swapped folder, and is copied to
+//! `<config dir>\backups\pre-update-*` (backup.rs) before the updater is started.
 //!
 //! Debug builds only (see docs/dev-notes.md): `BLINKER_UPDATE_API` replaces the release
 //! URL, and while it is set `http://127.0.0.1` URLs are accepted besides `https://`.
 //! Without it a debug build answers "Running from source" (Python's `not FROZEN`).
 
 mod apply;
+mod backup;
 mod check;
 mod download;
 mod release;
@@ -26,6 +30,7 @@ mod test_support;
 mod url;
 
 pub use apply::*;
+pub use backup::*;
 pub use check::*;
 pub use download::*;
 pub use release::*;

@@ -131,6 +131,11 @@ jobs:
           generate_release_notes: true
           # Prepended to the generated notes (softprops: body + generate_release_notes).
           body: |
+            Python version users: BEFORE updating, copy blinker_ui_config.json from your
+            BlinkerUI folder to %APPDATA%\BlinkerUI\ (create the folder; the old updater
+            deletes the BlinkerUI folder and your list of addons with it). Manual route and
+            details below.
+
             **Upgrading from the Python version (v0.1.x):** the in-app Update button of the
             old app replaces its install folder and deletes the old one, including
             `blinker_ui_config.json`, before the new app can copy it. Before updating,
