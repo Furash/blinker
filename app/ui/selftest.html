@@ -12,7 +12,7 @@
 import { metaText, baseName, sortFavouritesFirst, parseAliases, capLines, parsePort,
   selectionAfterRemove, nextPort, textAfterSnapshot, runningFromStatus, SaveQueue, ConsoleFeed,
   pathKey, addonLabel, scanItems, checkedAddons, setAllChecked, appendFolders, editResult, spinValue, blendStart,
-  parseSpin, commitSettings, importNotes, completeFrom } from "./logic.js";
+  parseSpin, commitSettings, importNotes, completeFrom, importConfirmText, importDoneText, replaceWithSavesPaused } from "./logic.js";
 import { invoke, isMock } from "./api.js";
 import { OutputPane } from "./output.js";
 
@@ -229,6 +229,118 @@ check("inline completion none", [completeFrom(["Arial"], "z"), completeFrom(["Ar
   check("detect_preset modified -> Custom", await invoke("detect_preset", { theme: custom }), "Custom");
   check("detect_preset fonts ignored", await invoke("detect_preset", { theme: { ...st.preset_themes[1], ui_font_size: 20 } }), "Frigus Nox");
   check("detect_preset empty -> Custom", await invoke("detect_preset", { theme: {} }), "Custom");
+}
+
+// Import Config helpers
+{
+  const sum = { folders: 7, skipped_folders: 0, has_theme: true, has_terminal: true, has_ai_aliases: true,
+    has_blender_path: false, sample_paths: ["D:\\a", "D:\\b", "D:\\c", "D:\\d", "D:\\e"] };
+  check("import text full", importConfirmText("C:\\x\\c.json", sum, 3),
+    "Import this config?\n\nC:\\x\\c.json\n\n7 folders, terminal, AI aliases, theme\n(first folders: D:\\a, D:\\b, D:\\c, D:\\d, D:\\e)\n\n"
+    + "Not in this file (reset to defaults): Blender path\n\n"
+    + "This replaces your current 3 folders and settings. The current config is saved as blinker_ui_config.json.bak.");
+  const one = importConfirmText("p", { ...sum, folders: 1, skipped_folders: 1, has_terminal: false, has_ai_aliases: false,
+    has_theme: false, has_blender_path: true, sample_paths: ["D:\\a"] }, 1);
+  check("import text singular", one,
+    "Import this config?\n\np\n\n1 folder, Blender path\n(folder: D:\\a)\n\n1 unreadable folder entry is kept in the file but not shown\n\n"
+    + "Not in this file (reset to defaults): terminal, AI aliases, theme\n\n"
+    + "This replaces your current 1 folder and settings. The current config is saved as blinker_ui_config.json.bak.");
+  const few = importConfirmText("p", { ...sum, folders: 2, skipped_folders: 3, sample_paths: ["a", "b"] }, 2);
+  check("import text few folders + plural skipped", few.includes("(folders: a, b)") && few.includes("3 unreadable folder entries are kept"), true);
+  // a file with every setting lists nothing as reset
+  const all = importConfirmText("p", { ...sum, has_blender_path: true }, 2);
+  check("import text all settings: no reset line", all.includes("Not in this file"), false);
+  // an empty folder list over a populated setup: explicit removal warning
+  const empty = { folders: 0, skipped_folders: 0, has_theme: false, has_terminal: false, has_ai_aliases: false,
+    has_blender_path: false, sample_paths: [] };
+  const t0 = importConfirmText("p", empty, 7);
+  check("import text 0 folders warns", t0.includes("\nThis file has no folders: all your current 7 folders will be removed.\n"), true);
+  check("import text 0 folders lists all resets",
+    t0.includes("Not in this file (reset to defaults): terminal, AI aliases, Blender path, theme"), true);
+  check("import text 0 folders replaces 7", t0.includes("This replaces your current 7 folders and settings."), true);
+  check("import text 0 folders singular current",
+    importConfirmText("p", empty, 1).includes("all your current 1 folder will be removed."), true);
+  // nothing to remove when the current setup is empty
+  const t00 = importConfirmText("p", empty, 0);
+  check("import text 0 over 0: no removal warning", t00.includes("will be removed"), false);
+  check("import text 0 over 0: replaces settings", t00.includes("This replaces your current settings."), true);
+  // a wrong-typed `folders` arrives from the backend as 0 folders (settings-only file)
+  const wrongTyped = importConfirmText("p", { ...empty, has_terminal: true }, 4);
+  check("import text wrong-typed folders (0) warns", wrongTyped.includes("This file has no folders: all your current 4 folders"), true);
+  check("import done plural", importDoneText(7), "Imported 7 folders.");
+  check("import done singular", importDoneText(1), "Imported 1 folder.");
+  check("import done zero", importDoneText(0), "Imported 0 folders.");
+}
+
+// SaveQueue pause / discard / resume (Import Config must not be overwritten by an older save)
+{
+  const sent = [];
+  const releases = [];
+  let value = "old";
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  const q = new SaveQueue((v) => { sent.push(v); return new Promise((r) => releases.push(r)); }, () => value);
+  q.request();
+  let pausedDone = false;
+  const paused = q.pause().then(() => { pausedDone = true; });
+  await tick();
+  check("pause waits for the save in flight", pausedDone, false);
+  releases.shift()();
+  await paused;
+  check("pause resolved after the in-flight save", sent, ["old"]);
+  q.request(); // paused: not sent
+  await tick();
+  check("request while paused is not sent", sent.length, 1);
+  value = "imported";
+  q.discard();
+  check("discard drops the pending save", [sent.length, q.dirty, q.paused], [1, false, false]);
+  q.request();
+  await tick();
+  check("after discard saves flow again with the current value", sent, ["old", "imported"]);
+  releases.shift()();
+  await tick();
+  await q.pause();
+  q.request();
+  await tick();
+  check("still paused: not sent", sent.length, 2);
+  q.resume();
+  await tick();
+  check("resume sends the pending request", sent.length, 3);
+  releases.shift()();
+}
+
+// replaceWithSavesPaused: the queue never stays paused
+{
+  const sent = [];
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  let value = "v";
+  const q = new SaveQueue((v) => { sent.push(v); return Promise.resolve(); }, () => value);
+  // success: swap ran, pending saves dropped, saving live again
+  const swapped = [];
+  const p = replaceWithSavesPaused(q, async () => { q.request(); return "new"; }, (v) => swapped.push(v));
+  await tick();
+  check("replace ok: swapped, pending save dropped", [await p, swapped, sent, q.paused, q.dirty], ["new", ["new"], [], false, false]);
+  q.request();
+  await tick();
+  check("replace ok: saves flow again", sent, ["v"]);
+  // swap throws (e.g. mergeTheme): the pending save is sent and the queue is not paused
+  let threw = null;
+  try {
+    await replaceWithSavesPaused(q, async () => { value = "edited"; q.request(); return 1; }, () => { throw new Error("boom"); });
+  } catch (e) { threw = e.message; }
+  await tick();
+  check("replace swap throws: error propagates, queue live, pending sent", [threw, q.paused, sent], ["boom", false, ["v", "edited"]]);
+  q.request();
+  await tick();
+  check("replace swap throws: later saves accepted", sent.length, 3);
+  // the backend call rejects
+  threw = null;
+  try {
+    await replaceWithSavesPaused(q, async () => { throw "refused"; }, () => { throw new Error("must not run"); });
+  } catch (e) { threw = e; }
+  check("replace fetch rejects: not paused", [threw, q.paused], ["refused", false]);
+  q.request();
+  await tick();
+  check("replace fetch rejects: later saves accepted", sent.length, 4);
 }
 
 const sum = document.createElement("div");

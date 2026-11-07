@@ -3,6 +3,7 @@ mod blender;
 mod commands;
 mod config;
 mod fonts;
+mod import;
 mod net;
 mod paths;
 mod pyerr;
@@ -68,6 +69,76 @@ fn update_selftest() -> bool {
 #[cfg(debug_assertions)]
 fn json<T: serde::Serialize>(v: &T) -> String {
     serde_json::to_string(v).unwrap_or_default()
+}
+
+/// `BlinkerUI.exe --import-selftest <file> [--with-running] [--change-between]` (debug builds only): Import
+/// Config without a window against the config in `BLINKER_CONFIG_DIR` (never the real one
+/// unless that variable is unset: it refuses to run then). Prints `inspect:` and `apply:`
+/// as JSON lines. With `--with-running` a stand-in "Blender" (a busy `cmd.exe`) is
+/// supervised first, so the first apply must be refused; it is killed and the apply
+/// repeated. With `--change-between` the file is modified after the inspect, so the first
+/// apply must be refused as changed.
+#[cfg(debug_assertions)]
+fn import_selftest() -> bool {
+    let args: Vec<String> = std::env::args().collect();
+    let Some(i) = args.iter().position(|a| a == "--import-selftest") else { return false };
+    if !paths::config_dir_overridden() {
+        println!("refused: set BLINKER_CONFIG_DIR to a scratch directory first");
+        return true;
+    }
+    let Some(src) = args.get(i + 1).map(std::path::PathBuf::from) else {
+        println!("usage: --import-selftest <file> [--with-running]");
+        return true;
+    };
+    struct Quiet;
+    impl blender::OutputSink for Quiet {
+        fn push(&self, _: u16, _: &str, _: u64) {}
+        fn exited(&self, _: u16, _: Option<i32>) {}
+    }
+    let path = paths::config_path();
+    let inspected = import::read_config_file(&src).map(|p| p.summary);
+    println!("inspect: {}", json(&inspected));
+    let mut fp = inspected.map(|s| s.fingerprint).unwrap_or_default();
+    if args.iter().any(|a| a == "--change-between") {
+        // the file changes after the user confirmed it: the apply must be refused
+        if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(&src) {
+            use std::io::Write;
+            let _ = f.write_all(b"\n");
+        }
+        let mut probe = config::load(&path);
+        println!("apply(changed): {}", json(&commands::apply_import(&path, &mut probe, &src, &fp, &[])));
+        fp = import::read_config_file(&src).map(|p| p.summary.fingerprint).unwrap_or_default();
+    }
+    let mut slot = config::load(&path);
+    let sup = blender::Supervisor::new(Arc::new(Quiet));
+    if args.iter().any(|a| a == "--with-running") {
+        let dir = std::env::temp_dir().join(format!("blinker_import_selftest_{}", std::process::id()));
+        let addon = dir.join("addon");
+        let _ = std::fs::create_dir_all(&addon);
+        let _ = std::fs::write(addon.join("__init__.py"), b"");
+        let boot = dir.join("bootstrap.py");
+        let _ = std::fs::write(&boot, b"#");
+        let spec = blender::LaunchSpec {
+            blender: "cmd.exe".into(),
+            bootstrap: boot,
+            folder: config::Folder { path: addon.to_string_lossy().into_owned(), port: 9931, ..Default::default() },
+            blend: None,
+            args_override: Some(vec!["/d".into(), "/c".into(), "for /L %i in (1,1,2000000000) do @rem".into()]),
+        };
+        println!("launch: {}", json(&sup.launch(spec)));
+        println!("alive: {:?}", sup.alive_ports());
+        println!("apply(running): {}", json(&commands::apply_import(&path, &mut slot, &src, &fp, &sup.alive_ports())));
+        println!("kill: {}", sup.kill(9931));
+        for _ in 0..500 {
+            if sup.alive_ports().is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    println!("apply: {}", json(&commands::apply_import(&path, &mut slot, &src, &fp, &sup.alive_ports())));
+    true
 }
 
 /// Same AUMID as the Python app (`_set_windows_aumid("blinker.ui")`) so existing pinned
@@ -175,7 +246,7 @@ fn bring_to_front(w: &tauri::WebviewWindow) {
 
 pub fn run() {
     #[cfg(debug_assertions)]
-    if selftest() || update_selftest() {
+    if selftest() || update_selftest() || import_selftest() {
         return;
     }
 
@@ -276,6 +347,8 @@ pub fn run() {
             commands::detect_preset,
             commands::export_theme,
             commands::import_theme,
+            commands::inspect_config_file,
+            commands::apply_config_file,
             commands::list_fonts,
             commands::check_for_updates,
             commands::apply_update,

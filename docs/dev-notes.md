@@ -11,6 +11,16 @@
 | `BLENDER_PATH` | Extra candidate for Blender auto-discovery (as in the Python UI). |
 | `BLINKER_UPDATE_API` | **Debug builds only** (ignored by release builds, `#[cfg(debug_assertions)]`). Replaces the release URL `https://api.github.com/repos/Furash/blinker/releases/latest` used by Check for updates. While it is set, release and asset URLs may also be `http://127.0.0.1[:port]/...` (a local test server); otherwise only `https://` URLs are fetched. Without it a debug build answers "Running from source" like the unfrozen Python app. |
 
+## Import Config test
+
+`BlinkerUI.exe --import-selftest <file> [--with-running]` (debug builds only; refuses to
+run unless `BLINKER_CONFIG_DIR` is set) prints `inspect:` / `apply:` JSON lines for the
+Import Config commands against `<BLINKER_CONFIG_DIR>\blinker_ui_config.json`. With
+`--with-running` a stand-in Blender (a busy `cmd.exe`) is supervised first, so the first
+apply is refused; it is then killed and the apply repeated. In the mock UI the canned file
+is reachable with the Import Config… button (use `?scene=plain`: the mock also refuses
+while a fake Blender runs).
+
 ## UI without the backend
 
 `app/ui` runs in a plain browser through `mock.js` (three fake folders). Serve the repo

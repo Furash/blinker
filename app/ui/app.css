@@ -55,7 +55,9 @@ button, input { font: inherit; color: inherit; margin: 0; }
   white-space: pre;
 }
 #toolbar .tool:hover { background: var(--button_hover_bg); }
-#config-label { margin-left: auto; margin-right: 8px; overflow: hidden; }
+#toolbar .tool { flex: none; }
+/* a long path ellipsises instead of overlapping the buttons */
+#config-label { margin-left: auto; margin-right: 8px; overflow: hidden; min-width: 0; text-overflow: ellipsis; }
 
 /* ---------- splitter ---------- */
 #split {

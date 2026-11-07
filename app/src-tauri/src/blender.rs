@@ -258,7 +258,7 @@ impl Supervisor {
         Self::with_temp_dir(sink, std::env::temp_dir())
     }
 
-    fn with_temp_dir(sink: Arc<dyn OutputSink>, temp_dir: PathBuf) -> Self {
+    pub(crate) fn with_temp_dir(sink: Arc<dyn OutputSink>, temp_dir: PathBuf) -> Self {
         Supervisor {
             shared: Arc::new(Shared {
                 state: Mutex::new(State { slots: HashMap::new(), shutting_down: false }),
@@ -393,6 +393,13 @@ impl Supervisor {
 
     pub fn is_alive(&self, port: u16) -> bool {
         lock(&self.shared.state).slots.get(&port).is_some_and(|s| s.alive)
+    }
+
+    /// Ports with a live supervised Blender (Import Config refuses while any exists).
+    pub fn alive_ports(&self) -> Vec<u16> {
+        let mut v: Vec<u16> = lock(&self.shared.state).slots.iter().filter(|(_, s)| s.alive).map(|(p, _)| *p).collect();
+        v.sort_unstable();
+        v
     }
 
     #[cfg(test)]

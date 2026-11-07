@@ -10,7 +10,7 @@ import { editDialog } from "./edit.js";
 import { settingsDialog } from "./settings.js";
 import {
   parseAliases, sortFavouritesFirst, selectionAfterRemove, runningFromStatus, SaveQueue, ConsoleFeed,
-  appendFolders,
+  appendFolders, importConfirmText, importDoneText, replaceWithSavesPaused,
 } from "./logic.js";
 
 // Startup steps (epoch ms) for the BLINKER_READY_LOG timeline (report_ready).
@@ -358,6 +358,83 @@ async function openSettings() {
   if (res) await commitSettings(res);
 }
 
+// ---------- Import Config ----------
+
+let importing = false;
+
+/**
+ * Pick a blinker_ui_config.json, show what it holds, and on Yes replace the whole setup
+ * with it (backend: `apply_config_file`, which keeps `<config>.bak`). Saves are paused
+ * across the call and the pending ones dropped afterwards: the save queue sends the FULL
+ * local config, so any save still queued would put the old setup back.
+ */
+async function importConfig() {
+  if (importing) return;
+  importing = true;
+  try {
+    if ([...state.launching.values()].includes("pending")) {
+      await message("Import Config", "A Blender launch is in progress. Wait for it to finish, then import again.", "warning");
+      return;
+    }
+    const path = await pickFile(
+      "Select a blinker_ui_config.json to import",
+      [{ name: "JSON (*.json)", extensions: ["json"] }, { name: "All files (*)", extensions: ["*"] }],
+    );
+    if (!path) return;
+    let summary;
+    try {
+      summary = await invoke("inspect_config_file", { path });
+    } catch (e) {
+      await message("Import Config", errText(e), "critical");
+      return;
+    }
+    if (!(await confirm("Import Config", importConfirmText(path, summary, folders().length)))) return;
+
+    if (saves.dirty) await save(); // so the .bak holds the latest local edits
+    let cfg;
+    try {
+      // `fingerprint`: the backend refuses when the file is no longer the one confirmed.
+      cfg = await replaceWithSavesPaused(
+        saves,
+        () => invoke("apply_config_file", { path, fingerprint: summary.fingerprint }),
+        swapConfig,
+      );
+    } catch (e) {
+      await message("Import Config", errText(e), "critical");
+      return;
+    }
+    await refreshAfterImport();
+    await message("Import Config", importDoneText(cfg.folders.length), "information");
+  } finally {
+    importing = false;
+  }
+}
+
+/**
+ * Install the config `apply_config_file` returned (already in `get_state` shape) in the
+ * UI state. Synchronous, and whatever can throw runs before anything is assigned.
+ */
+function swapConfig(cfg) {
+  const theme = mergeTheme(state.settingsInfo.defaults.theme, cfg.theme);
+  state.config = cfg;
+  state.config.theme = theme;
+  // Everything keyed by the old folders' ports: unknown until the next poll.
+  state.running = runningFromStatus(folders().map((f) => f.port), {});
+  state.launching.clear();
+  state.feed = new ConsoleFeed();
+  state.feedToken = null;
+  state.selected = folders().length ? 0 : null; // as after startup
+}
+
+/** Redraw for the swapped-in config (saves are live again: edits made now are kept). */
+async function refreshAfterImport() {
+  applyTheme(state.config.theme);
+  await syncPorts();
+  await loadIcons(state.config.ai_aliases);
+  refreshRows();
+  pollNow();
+}
+
 // ---------- Check for updates (`_check_for_updates`; texts and branches: updater.rs) ----------
 
 let updating = false;
@@ -535,6 +612,7 @@ async function main() {
 
   $("act-add").addEventListener("click", addFolder);
   $("act-settings").addEventListener("click", openSettings);
+  $("act-import").addEventListener("click", importConfig);
   $("act-update").addEventListener("click", checkForUpdates);
 
   // Show only after the themed first frame is painted (no flash of unthemed content).
