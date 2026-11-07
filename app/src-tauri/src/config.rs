@@ -91,12 +91,18 @@ pub fn default_terminal() -> String {
 /// Never fails: missing, empty, invalid or hand-edited files fall back to defaults
 /// field by field. Unknown keys are preserved in `extra`.
 pub fn load(path: &Path) -> Config {
-    let mut cfg = Config::default();
+    let cfg = Config::default();
     let Ok(bytes) = std::fs::read(path) else { return cfg };
     let text = String::from_utf8_lossy(&bytes);
     let text = text.trim_start_matches('\u{feff}');
-    let Ok(Value::Object(mut obj)) = serde_json::from_str::<Value>(text) else { return cfg };
+    let Ok(Value::Object(obj)) = serde_json::from_str::<Value>(text) else { return cfg };
+    from_object(obj)
+}
 
+/// The lenient field-by-field conversion of a parsed top-level JSON object (shared by
+/// `load` and the Import Config command).
+pub fn from_object(mut obj: Map<String, Value>) -> Config {
+    let mut cfg = Config::default();
     match obj.remove("folders") {
         Some(Value::Array(items)) => {
             for v in items {
@@ -271,6 +277,31 @@ fn rename_with_retry(from: &Path, to: &Path) -> io::Result<()> {
             r => return r,
         }
     }
+}
+
+/// `<config>.bak`: the single backup Import Config leaves next to the config.
+pub fn backup_path(path: &Path) -> std::path::PathBuf {
+    let mut p = path.as_os_str().to_owned();
+    p.push(".bak");
+    std::path::PathBuf::from(p)
+}
+
+/// Copies the current on-disk config to `<config>.bak` (replacing an older backup).
+/// `Ok(false)` when there is no config file yet. Goes through `<config>.bak.tmp` + rename
+/// like `save`, so a failed copy never leaves a truncated backup.
+pub fn backup(path: &Path) -> io::Result<bool> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    let bak = backup_path(path);
+    let mut tmp = bak.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = std::path::PathBuf::from(tmp);
+    std::fs::copy(path, &tmp)?;
+    rename_with_retry(&tmp, &bak).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })?;
+    Ok(true)
 }
 
 /// Copies `legacy` to `new` once: only if `new` is absent and `legacy` exists.

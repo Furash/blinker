@@ -97,6 +97,7 @@ export async function pick(kind, opts) {
   if (Array.isArray(queue) && queue.length) return queue.shift();
   if (kind === "folder") return SCAN_ROOT;
   if (kind === "save") return `C:\\Users\\user\\${opts.defaultPath || "export.json"}`;
+  if (/blinker_ui_config/.test(opts.title || "")) return MOCK_CONFIG_IMPORT;
   if ((opts.filters || []).some((f) => f.extensions.includes("json"))) return MOCK_IMPORT;
   if ((opts.filters || []).some((f) => f.extensions.includes("blend"))) return String.raw`D:\scenes\other.blend`;
   return String.raw`C:\Program Files\Blender Foundation\Blender 4.5\blender.exe`;
@@ -207,6 +208,20 @@ const commands = {
     }
     return out;
   },
+  // Import Config (stand-ins for import.rs / commands.rs `apply_import`; the mock refuses
+  // while a fake Blender runs: use &scene=plain, or Kill the running one first).
+  inspect_config_file: ({ path }) => mockReadConfig(path).summary,
+  // Order as the backend: read + fingerprint check first, then the running-Blender check.
+  apply_config_file: ({ path, fingerprint }) => {
+    const { cfg, summary } = mockReadConfig(path);
+    if (summary.fingerprint !== fingerprint) throw "The file changed since you chose it; select it again.";
+    if (alive.size) throw "Stop the running Blender instances first, then import again.";
+    const n = { ...cfg, folders: [...cfg.folders.filter((f) => f.favourite), ...cfg.folders.filter((f) => !f.favourite)] };
+    n.theme = { ...TOKYO, ...n.theme };
+    for (const k of Object.keys(config)) delete config[k];
+    Object.assign(config, clone(n));
+    return config;
+  },
   // Check for updates (texts as updater.rs). `&update=available` offers v0.2.0, whose
   // download then fails the SHA256 check (the mock never quits).
   check_for_updates: () => (params.get("update") === "available"
@@ -242,6 +257,55 @@ function mockNormalizeHex(s) {
 const MOCK_IMPORT = String.raw`C:\Users\user\frigus_custom.json`;
 const files = new Map([[MOCK_IMPORT,
   JSON.stringify({ ...PRESETS.frigus, window_bg: "nope", launchers: [] })]]);
+
+// A canned old Python-app config (7 folders, two on port 9910) for Import Config, plus a
+// file that is not a config (a theme export): both reachable through the picker queue
+// `window.__blinkerMockPicks = [path]`.
+const MOCK_CONFIG_IMPORT = String.raw`C:\Users\user\Downloads\blinker_ui_config.json`;
+const MOCK_NOT_CONFIG = String.raw`C:\Users\user\frigus_custom.json`;
+files.set(MOCK_CONFIG_IMPORT, JSON.stringify({
+  folders: [
+    ["D:\\git\\Blender_CCP_Tools", 9901, true], ["D:\\git\\InteractionOps", 9900, true], ["D:\\git\\snap_issue\\", 9876, true],
+    ["D:\\git\\blender_gr2", 9910, false], ["D:\\git\\chordsong", 9907, false], ["D:\\git\\unwrapme_bl5", 9910, false],
+    ["D:\\git\\cablemess", 9877, false],
+  ].map(([path, port, favourite]) => ({ path, port, repo: "blinker", module: "", blend: "", favourite })),
+  terminal: 'start "" /D "{path}" cmd /K "{cmd}"', ai_aliases: "claude, codex", blender_path: "",
+  theme: { ...PRESETS.frigus },
+}));
+
+/** Lenient read of a config file for the mock: {summary, cfg} or throws the error text. */
+function mockReadConfig(path) {
+  if (!files.has(path)) throw `[Errno 2] No such file or directory: ${JSON.stringify(path)}`;
+  let data;
+  try { data = JSON.parse(files.get(path)); } catch (e) { throw String(e.message); }
+  if (!data || typeof data !== "object" || Array.isArray(data)) throw "Config file must be a JSON object";
+  const isObj = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+  // as import.rs: a folder list (even empty) or another known key with its right type
+  if (!(Array.isArray(data.folders) || ["terminal", "ai_aliases", "blender_path"].some((k) => typeof data[k] === "string")
+    || isObj(data.theme))) {
+    throw "This file does not look like a Blinker UI config (no folders or settings found)";
+  }
+  const items = Array.isArray(data.folders) ? data.folders : [];
+  const ok = items.filter((f) => f && typeof f === "object" && !Array.isArray(f) && typeof (f.path ?? "") === "string");
+  const cfg = {
+    folders: ok.map((f) => ({ path: "", port: 9876, repo: "blinker", module: "", blend: "", favourite: false, ...f })),
+    terminal: typeof data.terminal === "string" && data.terminal.trim() ? data.terminal : 'wt -d "{path}" {cmd}',
+    ai_aliases: typeof data.ai_aliases === "string" ? data.ai_aliases : "claude, codex",
+    blender_path: typeof data.blender_path === "string" ? data.blender_path : "",
+    theme: data.theme && typeof data.theme === "object" && !Array.isArray(data.theme) ? data.theme : {},
+  };
+  const str = (k) => typeof data[k] === "string";
+  return {
+    cfg,
+    summary: {
+      fingerprint: [...files.get(path)].reduce((h, c) => (Math.imul(h, 31) + c.charCodeAt(0)) >>> 0, 7).toString(16).padStart(8, "0"),
+      folders: cfg.folders.length, skipped_folders: items.length - ok.length,
+      has_theme: Object.keys(cfg.theme).length > 0, has_terminal: str("terminal") && !!data.terminal.trim(),
+      has_ai_aliases: str("ai_aliases"), has_blender_path: str("blender_path") && !!data.blender_path.trim(),
+      sample_paths: cfg.folders.slice(0, 5).map((f) => f.path),
+    },
+  };
+}
 
 export async function invoke(cmd, args = {}) {
   const f = commands[cmd];

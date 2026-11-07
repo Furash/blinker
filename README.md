@@ -201,6 +201,13 @@ measured with [tools/detect_window_paint.py](tools/detect_window_paint.py)).
   if that file does not exist yet, an existing `blinker_ui_config.json` next to the exe
   (the Python app's location) is copied there once. Because the config now lives in
   `%APPDATA%`, the new app's own updates keep it.
+- **Import Config…** (toolbar, after Settings) loads a `blinker_ui_config.json` from any
+  location (the old Python app's, a backup, a colleague's). After you confirm, it replaces
+  the whole current setup (folders, terminal, AI aliases, Blender path, theme); the previous
+  config is kept as `blinker_ui_config.json.bak` next to it (one file, overwritten by the
+  next import: it holds only the config from before the LAST import, so two imports in a
+  row overwrite it; copy it away if you want to keep an original). Stop running Blender
+  instances first.
 - Custom AI icons: `%APPDATA%\BlinkerUI\icons`, then `icons\` next to the exe, then the
   bundled ones.
 - Development: `BLINKER_CONFIG_DIR=<dir>` uses `<dir>\blinker_ui_config.json` instead
@@ -219,6 +226,9 @@ either of:
    folder that contains the old `BlinkerUI\`, replacing files): the old config stays
    next to the exe and is copied to `%APPDATA%\BlinkerUI` on first start. The old
    `_internal\` folder is no longer used and can be deleted.
+
+If the old `blinker_ui_config.json` still exists anywhere, the simplest route is to
+install the new app and use **Import Config…** to load it.
 
 ### Build
 

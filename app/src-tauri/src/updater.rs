@@ -197,7 +197,13 @@ pub fn verify_sha256(file: &Path, expected: &str) -> bool {
 /// `_sha256_hex`: lower-case hex SHA-256 of a file, streamed (1 MiB chunks).
 #[cfg(windows)]
 pub fn sha256_hex(path: &Path) -> Result<String, String> {
-    use std::io::Read;
+    let f = std::fs::File::open(path).map_err(|e| pyerr::os_error(&e, path))?;
+    sha256_hex_reader(f)
+}
+
+/// Lower-case hex SHA-256 of everything `f` yields (also fingerprints Import Config bytes).
+#[cfg(windows)]
+pub fn sha256_hex_reader(mut f: impl std::io::Read) -> Result<String, String> {
     use std::ptr::{null, null_mut};
     use windows_sys::Win32::Security::Cryptography::*;
 
@@ -207,7 +213,6 @@ pub fn sha256_hex(path: &Path) -> Result<String, String> {
             unsafe { BCryptDestroyHash(self.0) };
         }
     }
-    let mut f = std::fs::File::open(path).map_err(|e| pyerr::os_error(&e, path))?;
     let mut out = [0u8; 32];
     unsafe {
         let mut h: BCRYPT_HASH_HANDLE = null_mut();
@@ -237,6 +242,11 @@ pub fn sha256_hex(path: &Path) -> Result<String, String> {
 
 #[cfg(not(windows))]
 pub fn sha256_hex(_path: &Path) -> Result<String, String> {
+    Err("SHA-256 uses Windows CNG".into())
+}
+
+#[cfg(not(windows))]
+pub fn sha256_hex_reader(_f: impl std::io::Read) -> Result<String, String> {
     Err("SHA-256 uses Windows CNG".into())
 }
 
@@ -814,6 +824,15 @@ mod tests {
 
     const ABC: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
 
+    #[test]
+    fn sha256_hex_reader_known_vector() {
+        assert_eq!(
+            sha256_hex_reader(&b"abc"[..]).unwrap(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[cfg(windows)]
     #[test]
     fn sha256_hex_known_vectors() {
         assert_eq!(sha256_hex(file_with(b"abc").path()).unwrap(), ABC);

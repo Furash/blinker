@@ -233,19 +233,45 @@ export class SaveQueue {
     this.onError = onError;
     this.busy = false;
     this.dirty = false;
+    this.paused = false;
     this.waiters = [];
+    this.idle = [];
+  }
+
+  /**
+   * Stop sending: resolves once the save in flight (if any) has finished. Requests made
+   * while paused stay pending (`dirty`) until `resume()` or `discard()`.
+   */
+  async pause() {
+    this.paused = true;
+    while (this.busy) await new Promise((r) => this.idle.push(r));
+  }
+
+  /** Continue; a request made while paused is sent now. */
+  resume() {
+    this.paused = false;
+    if (this.dirty && !this.busy) this._pump();
+  }
+
+  /** Drop pending requests (their waiters resolve) and continue. */
+  discard() {
+    this.dirty = false;
+    const w = this.waiters;
+    this.waiters = [];
+    for (const r of w) r();
+    this.paused = false;
   }
 
   request() {
     this.dirty = true;
     const done = new Promise((r) => this.waiters.push(r));
-    if (!this.busy) this._pump();
+    if (!this.busy && !this.paused) this._pump();
     return done;
   }
 
   async _pump() {
     this.busy = true;
-    while (this.dirty) {
+    while (this.dirty && !this.paused) {
       this.dirty = false;
       const waiters = this.waiters;
       this.waiters = [];
@@ -257,6 +283,9 @@ export class SaveQueue {
       for (const r of waiters) r();
     }
     this.busy = false;
+    const idle = this.idle;
+    this.idle = [];
+    for (const r of idle) r();
   }
 }
 
@@ -291,5 +320,71 @@ export class ConsoleFeed {
       return "";
     }
     return seq > this.threshold ? text : "";
+  }
+}
+
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+/** "Imported 7 folders." / "Imported 1 folder." */
+export function importDoneText(n) {
+  return `Imported ${plural(n, "folder", "folders")}.`;
+}
+
+/**
+ * The Import Config confirm text from `inspect_config_file`'s summary
+ * ({folders, skipped_folders, has_theme, has_terminal, has_ai_aliases, has_blender_path,
+ * sample_paths}) and the number of folders in the CURRENT setup, which the import replaces.
+ */
+export function importConfirmText(path, s, currentFolders = 0) {
+  const parts = [plural(s.folders, "folder", "folders")];
+  if (s.has_terminal) parts.push("terminal");
+  if (s.has_ai_aliases) parts.push("AI aliases");
+  if (s.has_blender_path) parts.push("Blender path");
+  if (s.has_theme) parts.push("theme");
+  const lines = ["Import this config?", "", path, "", parts.join(", ")];
+  const sample = s.sample_paths || [];
+  if (sample.length) {
+    const label = s.folders > sample.length ? "first folders" : sample.length === 1 ? "folder" : "folders";
+    lines.push(`(${label}: ${sample.join(", ")})`);
+  }
+  if (s.folders === 0 && currentFolders > 0) {
+    lines.push("", `This file has no folders: all your current ${plural(currentFolders, "folder", "folders")} will be removed.`);
+  }
+  if (s.skipped_folders > 0) {
+    lines.push("", s.skipped_folders === 1
+      ? "1 unreadable folder entry is kept in the file but not shown"
+      : `${s.skipped_folders} unreadable folder entries are kept in the file but not shown`);
+  }
+  const missing = [];
+  if (!s.has_terminal) missing.push("terminal");
+  if (!s.has_ai_aliases) missing.push("AI aliases");
+  if (!s.has_blender_path) missing.push("Blender path");
+  if (!s.has_theme) missing.push("theme");
+  if (missing.length) lines.push("", `Not in this file (reset to defaults): ${missing.join(", ")}`);
+  const replaced = currentFolders > 0
+    ? `This replaces your current ${plural(currentFolders, "folder", "folders")} and settings.`
+    : "This replaces your current settings.";
+  lines.push("", `${replaced} The current config is saved as blinker_ui_config.json.bak.`);
+  return lines.join("\n");
+}
+
+/**
+ * Replace the setup while saves are held back: waits for the save in flight, then
+ * `fetchNew()` (the backend call) and `swap(value)` (synchronous: install the value in the
+ * UI state). When both succeed the pending saves are dropped (`discard`: they would put the
+ * old setup back); on ANY failure (a rejected call, a throw in `swap`) saving resumes, so
+ * the queue never stays paused. Returns what `fetchNew` returned.
+ */
+export async function replaceWithSavesPaused(queue, fetchNew, swap) {
+  let done = false;
+  try {
+    await queue.pause();
+    const value = await fetchNew();
+    swap(value);
+    done = true;
+    return value;
+  } finally {
+    if (done) queue.discard();
+    else queue.resume();
   }
 }
