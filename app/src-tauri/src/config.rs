@@ -263,7 +263,7 @@ pub fn save(path: &Path, cfg: &Config) -> io::Result<()> {
 /// Replacing the config fails while another process has it open without delete
 /// sharing (an editor, a scanner, a script reading it). Python's in-place
 /// `write_text` did not care; retry for up to ~2 s before reporting the error.
-fn rename_with_retry(from: &Path, to: &Path) -> io::Result<()> {
+pub(crate) fn rename_with_retry(from: &Path, to: &Path) -> io::Result<()> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     loop {
         match std::fs::rename(from, to) {
