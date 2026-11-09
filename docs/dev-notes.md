@@ -5,7 +5,7 @@
 | Variable | Effect |
 |---|---|
 | `BLINKER_CONFIG_DIR` | The app reads and writes `<dir>\blinker_ui_config.json` (and looks for custom icons in `<dir>\icons`) instead of `%APPDATA%\BlinkerUI`. The legacy exe-dir config is not migrated. Use a temp dir for tests and manual runs so the real config is never touched. |
-| `BLINKER_READY_LOG` | When the window is shown, the UI appends `ready_ms=<ms> timeline=<json>` to this file: `performance.now()` at show (from navigation start), then the startup steps as `[name, ms since process creation]` pairs in time order (`run` = Rust `run()`, `nav_start` = webview navigation start, `setup` = Tauri setup hook (window and WebView2 created), `page_started`, `js_start`, `dom_content_loaded`, `page_finished`, `get_state`, `icons_fonts`, `rendered`, `show_raf` or `show_timeout`, `shown`). `tools/measure_startup.ps1` sets it and prints the line per run. |
+| `BLINKER_READY_LOG` | When the window is shown, the UI appends `ready_ms=<ms> timeline=<json>` to this file: `performance.now()` at show (from navigation start), then the startup steps as `[name, ms since process creation]` pairs in time order (`run` = Rust `run()`, `nav_start` = webview navigation start, `setup` = Tauri setup hook (window and WebView2 created), `window_state` = saved window rect restored (window_state.rs), `page_started`, `js_start`, `dom_content_loaded`, `page_finished`, `get_state`, `icons_fonts`, `rendered`, `show_raf` or `show_timeout`, `shown`). `tools/measure_startup.ps1` sets it and prints the line per run. |
 | `BLINKER_SIMULATE_NO_WEBVIEW2` | **Debug builds only.** Treat the WebView2 runtime as missing: the app shows the native "needs the WebView2 Runtime" box (No = exit code 1; Yes opens the download page) instead of starting. |
 | `BLINKER_TEST_FORCE_NO_WINDOW` | `cargo test` only: the windowed stand-in Blender reports that it cannot create a window, so the two windowed Supervisor tests take their SKIP path (as on a runner without a desktop). |
 | `BLENDER_PATH` | Extra candidate for Blender auto-discovery (as in the Python UI). |
@@ -13,6 +13,31 @@
 | `BLINKER_UPDATE_TEMP` | Read by the updater script (`blinker_updater.ps1`, script.rs): folder for its stage folder (`blinker_update_stage`) and `blinker_update.log` instead of `%TEMP%`, so tests do not collide with each other or with a real update. |
 | `BLINKER_UPDATE_FORCE_COPY` | Read by the updater script: copy the staged folder into place (`Copy-Item -Recurse`) instead of trying `Move-Item` first. Without it the script only copies when `Move-Item` fails before creating the destination: a rarely used safety net, because on Windows PowerShell 5.1 a cross-volume `Move-Item` of a folder normally succeeds (PowerShell copies and deletes by itself). A move that fails part-way is treated as a failure and rolled back. Tests use the variable to cover the copy path. |
 | `BLINKER_UPDATE_NO_UI` | Read by the updater script: on failure, log the message (`message box skipped (BLINKER_UPDATE_NO_UI): ...`) instead of showing the "BlinkerUI update failed" box, so automated runs never block. |
+
+## Window position memory
+
+`window_state.rs`: the main window's NORMAL (restored) rect, the maximized flag and the
+monitor scale factor live in `<config dir>\window_state.json` (`%APPDATA%\BlinkerUI\` or
+`BLINKER_CONFIG_DIR`), pretty JSON, written atomically (`.tmp` + rename). Delete the file
+to reset to the default placement (Windows' CW_USEDEFAULT cascade, size from
+tauri.conf.json). `x`/`y` are the outer top-left (`GetWindowRect`, physical px of the
+virtual desktop, the invisible resize border included); `width`/`height` are the CLIENT
+size (`GetClientRect`, what `set_size` takes).
+
+- Restored in `setup()` while the window is still hidden, after `fit` accepted it: at
+  least 120 x 60 px of the title-bar strip on some monitor's work area, else defaults;
+  size converted when the monitor's scale factor changed, clamped to [400x300, work area].
+  A maximized state pins the restore rect with `SetWindowPlacement` before maximizing
+  (without it about half of the starts un-maximized to the creation rect).
+- Saved on close (synchronously, before the Blender shutdown), when the updater quits, and
+  500 ms after the last move/resize once the window is visible (kill-safe). Minimised and
+  fullscreen rects are never recorded; nothing is written when nothing changed.
+
+Debugging: run the release exe with `BLINKER_CONFIG_DIR=<scratch>` and drive it with Win32
+from a per-monitor-DPI-aware script (`SetProcessDpiAwarenessContext(-4)` so coordinates
+are physical): `GetWindowRect`/`GetClientRect` must equal the file's `x`/`y` and
+`width`/`height`; `GetWindowPlacement().rcNormalPosition` shows the restore rect of a
+maximized window. `BLINKER_READY_LOG` shows the restore step as the `window_state` mark.
 
 ## Import Config test
 

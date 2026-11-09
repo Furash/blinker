@@ -201,6 +201,8 @@ measured with [tools/detect_window_paint.py](tools/detect_window_paint.py)).
   if that file does not exist yet, an existing `blinker_ui_config.json` next to the exe
   (the Python app's location) is copied there once. Because the config now lives in
   `%APPDATA%`, the new app's own updates keep it.
+- The window reopens where you left it (position, size and maximized state, remembered in
+  `window_state.json` next to the config; delete that file to get the default placement back).
 - **Import Config…** (toolbar, after Settings) loads a `blinker_ui_config.json` from any
   location (the old Python app's, a backup, a colleague's). After you confirm, it replaces
   the whole current setup (folders, terminal, AI aliases, Blender path, theme); the previous

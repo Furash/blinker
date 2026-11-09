@@ -42,6 +42,8 @@ pub async fn cancel_update(zip_path: String) {
 
 fn quit_if_started(app: &AppHandle, r: &updater::ApplyResult) {
     if matches!(r, updater::ApplyResult::Started) {
+        // `app.exit` emits no CloseRequested: remember the window first.
+        crate::window_state::save_on_exit(app);
         app.state::<AppState>().supervisor.shutdown();
         app.exit(0);
     }

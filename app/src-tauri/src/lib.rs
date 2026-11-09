@@ -11,6 +11,7 @@ mod startup;
 mod terminal;
 mod updater;
 mod theme;
+mod window_state;
 mod winhttp;
 
 use std::sync::{Arc, Mutex};
@@ -288,6 +289,14 @@ pub fn run() {
                     config::migrate_legacy_config(&config_path, &legacy);
                 }
             }
+            // Window position/size from last time, applied while the window is still
+            // hidden (the frontend shows it after first paint): no flash at the default place.
+            if let Some(w) = app.get_webview_window(window_state::MAIN) {
+                let memory = window_state::restore(&w, window_state::state_path(&config_path));
+                memory.start_worker(window_state::DEBOUNCE);
+                app.manage(memory);
+            }
+            timeline::mark("window_state");
             let cfg = config::load(&config_path);
             let ports = Arc::new(Mutex::new(cfg.folders.iter().map(|f| f.port).collect::<Vec<_>>()));
             let sink = Arc::new(TauriSink { app: app.handle().clone() });
@@ -318,6 +327,9 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            // First, and on its own: the close-time save is synchronous and must not wait
+            // for (or be lost to) a slow Blender shutdown; it never panics or blocks the close.
+            window_state::on_window_event(window, event);
             if let WindowEvent::CloseRequested { .. } = event {
                 window.app_handle().state::<AppState>().supervisor.shutdown();
             }
